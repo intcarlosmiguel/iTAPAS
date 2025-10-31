@@ -5,19 +5,59 @@ Alocação de Tráfego (TAP).
 Este script evita o uso de classes, preferindo funções que recebem o estado
 da rede (grafo, viagens, etc.) como argumento e retornam um novo estado
 modificado. Isso torna o fluxo de dados explícito e o código mais modular.
+
+ORGANIZAÇÃO: Funções ordenadas pela ordem de execução no algoritmo.
 """
 
 import networkx as nx # type: ignore
 import numpy as np
 from collections import defaultdict
 
-# --- Parâmetros Globais do Algoritmo ---
+
+# =============================================================================
+# PARÂMETROS GLOBAIS DO ALGORITMO
+# =============================================================================
+
 BPR_ALPHA = 0.15
 BPR_BETA = 4.0
 TOLERANCIA_FLUXO = 1e-6
 TOLERANCIA_CUSTO = 1e-6
 
-# --- Funções de Carga e Inicialização ---
+
+# =============================================================================
+# 1. FUNÇÃO PRINCIPAL DE EXECUÇÃO (PONTO DE ENTRADA)
+# =============================================================================
+
+def executar_itapas(arquivo_rede: str, arquivo_viagens: str, max_iter: int, gap_convergencia: float):
+    """Função principal que orquestra a execução do algoritmo iTAPAS."""
+    grafo = carregar_rede(arquivo_rede)
+    viagens = carregar_viagens(arquivo_viagens)
+    origens = sorted(list(set(o for o, d in viagens.keys())))
+    conjunto_pas = []
+    
+    grafo = atribuicao_inicial(grafo, viagens)
+    
+    for i in range(max_iter):
+        print(f"\n--- Iteração Principal {i+1}/{max_iter} ---")
+        
+        for origem in origens:
+            grafo, conjunto_pas = processar_origem(grafo, origem, conjunto_pas)
+        
+        grafo, conjunto_pas = deslocamento_global_pas(grafo, conjunto_pas)
+        
+        gap = calcular_gap_relativo(grafo, viagens, origens)
+        print(f"Gap Relativo: {gap:.8e}")
+        if gap < gap_convergencia:
+            print("Convergência atingida!")
+            break
+    
+    print("\nAlocação finalizada.")
+    return grafo
+
+
+# =============================================================================
+# 2. CARREGAMENTO DE DADOS (chamadas por executar_itapas)
+# =============================================================================
 
 def carregar_rede(caminho_arquivo: str) -> nx.DiGraph:
     """Carrega a topologia da rede a partir de um arquivo de texto."""
@@ -36,6 +76,7 @@ def carregar_rede(caminho_arquivo: str) -> nx.DiGraph:
     print(f"Rede carregada com {grafo.number_of_nodes()} nós e {grafo.number_of_edges()} arcos.")
     return grafo
 
+
 def carregar_viagens(caminho_arquivo: str) -> dict:
     """Carrega a matriz de viagens (Origem-Destino) a partir de um arquivo."""
     dados_viagens = np.loadtxt(caminho_arquivo, comments='#')
@@ -46,24 +87,10 @@ def carregar_viagens(caminho_arquivo: str) -> dict:
     print(f"Matriz OD carregada com {len(viagens)} pares OD.")
     return viagens
 
-# --- Funções Utilitárias de Custo ---
 
-def atualizar_custo_arco(grafo: nx.DiGraph, u: int, v: int):
-    """Atualiza o custo de um único arco no grafo (modifica o grafo in-place)."""
-    dados_arco = grafo[u][v]
-    fluxo = dados_arco['fluxo']
-    capacidade = dados_arco['capacidade']
-    tempo_livre = dados_arco['tempo_fluxo_livre']
-    
-    custo = tempo_livre * (1 + BPR_ALPHA * (fluxo / capacidade) ** BPR_BETA)
-    grafo[u][v]['custo'] = custo
-
-def atualizar_todos_custos(grafo: nx.DiGraph):
-    """Atualiza os custos de todos os arcos no grafo (modifica in-place)."""
-    for u, v in grafo.edges():
-        atualizar_custo_arco(grafo, u, v)
-
-# --- Funções do Núcleo do Algoritmo iTAPAS ---
+# =============================================================================
+# 3. ALOCAÇÃO INICIAL (chamada por executar_itapas)
+# =============================================================================
 
 def atribuicao_inicial(grafo: nx.DiGraph, viagens: dict) -> nx.DiGraph:
     """Realiza a alocação inicial 'tudo-ou-nada'."""
@@ -79,17 +106,40 @@ def atribuicao_inicial(grafo: nx.DiGraph, viagens: dict) -> nx.DiGraph:
     atualizar_todos_custos(grafo)
     return grafo
 
+
+def atualizar_todos_custos(grafo: nx.DiGraph):
+    """Atualiza os custos de todos os arcos no grafo (modifica in-place)."""
+    for u, v in grafo.edges():
+        atualizar_custo_arco(grafo, u, v)
+
+
+def atualizar_custo_arco(grafo: nx.DiGraph, u: int, v: int):
+    """Atualiza o custo de um único arco no grafo (modifica o grafo in-place)."""
+    dados_arco = grafo[u][v]
+    fluxo = dados_arco['fluxo']
+    capacidade = dados_arco['capacidade']
+    tempo_livre = dados_arco['tempo_fluxo_livre']
+    
+    custo = tempo_livre * (1 + BPR_ALPHA * (fluxo / capacidade) ** BPR_BETA)
+    grafo[u][v]['custo'] = custo
+
+
+# =============================================================================
+# 4. PROCESSAMENTO POR ORIGEM (chamada no loop principal)
+# =============================================================================
+
 def processar_origem(grafo: nx.DiGraph, origem: int, conjunto_pas: list) -> (nx.DiGraph, list): # type: ignore
     """Executa uma iteração de equilíbrio para uma única origem."""
     # CORREÇÃO: Usa a chave 'custo' para o peso do Dijkstra
     preds, custos_spt = nx.dijkstra_predecessor_and_distance(grafo, source=origem, weight='custo')
     arcos_desequilibrados = identificar_arcos_desequilibrados(grafo, origem, custos_spt)
-    print(f"Origem {origem}: {len(arcos_desequilibrados)} arcos desequilibrados encontrados.")
-    exit(0)
+    print(origem)
+    print(arcos_desequilibrados)
     while arcos_desequilibrados:
         u, v = arcos_desequilibrados.pop(0)
         
         pas = identificar_pas_fluxo_maximo(grafo, u, v, origem, preds)
+        print(pas)
         if not pas: 
             continue
 
@@ -99,6 +149,7 @@ def processar_origem(grafo: nx.DiGraph, origem: int, conjunto_pas: list) -> (nx.
             conjunto_pas = adicionar_pas_ao_conjunto(conjunto_pas, pas)
             
     return grafo, conjunto_pas
+
 
 def identificar_arcos_desequilibrados(grafo: nx.DiGraph, origem: int, custos_spt: dict) -> list:
     """Encontra arcos com fluxo positivo da origem que não estão na SPT."""
@@ -114,7 +165,6 @@ def identificar_arcos_desequilibrados(grafo: nx.DiGraph, origem: int, custos_spt
                 desequilibrados.append((u, v))
     return desequilibrados
 
-# --- Funções Específicas de PAS ---
 
 def identificar_pas_fluxo_maximo(grafo: nx.DiGraph, u_deseq: int, v_deseq: int, origem: int, preds: dict) -> dict:
     """Identifica um PAS usando a busca retroativa de fluxo máximo."""
@@ -160,6 +210,7 @@ def identificar_pas_fluxo_maximo(grafo: nx.DiGraph, u_deseq: int, v_deseq: int, 
     
     return {'s1': s1, 's2': s2, 'origem': origem, 'cabeca': cabeca, 'cauda': cauda}
 
+
 def deslocar_fluxo_no_pas(grafo: nx.DiGraph, pas: dict) -> (float, nx.DiGraph): # type: ignore
     """Calcula e aplica o deslocamento de fluxo ótimo em um PAS."""
     s1, s2, origem = pas['s1'], pas['s2'], pas['origem']
@@ -192,7 +243,8 @@ def deslocar_fluxo_no_pas(grafo: nx.DiGraph, pas: dict) -> (float, nx.DiGraph): 
     delta_newton = (custo_s2 - custo_s1) / denominador
     delta = max(0, min(delta_newton, fluxo_maximo_deslocavel))
 
-    if delta < TOLERANCIA_FLUXO: return 0.0, grafo
+    if delta < TOLERANCIA_FLUXO: 
+        return 0.0, grafo
 
     for u, v in s1:
         grafo[u][v]['fluxo'] += delta
@@ -204,6 +256,7 @@ def deslocar_fluxo_no_pas(grafo: nx.DiGraph, pas: dict) -> (float, nx.DiGraph): 
         atualizar_custo_arco(grafo, u, v)
         
     return delta, grafo
+
 
 def adicionar_pas_ao_conjunto(conjunto_pas: list, novo_pas: dict) -> list:
     """Adiciona um novo PAS ao conjunto global, evitando duplicatas topológicas."""
@@ -220,9 +273,15 @@ def adicionar_pas_ao_conjunto(conjunto_pas: list, novo_pas: dict) -> list:
     
     return conjunto_pas + [novo_pas]
 
+
+# =============================================================================
+# 5. DESLOCAMENTO GLOBAL DE PAS (chamada no loop principal)
+# =============================================================================
+
 def deslocamento_global_pas(grafo: nx.DiGraph, conjunto_pas: list, num_deslocamentos=20) -> (nx.DiGraph, list): # type: ignore
     """Reequilibra repetidamente todos os PAS no conjunto global."""
-    if not conjunto_pas: return grafo, conjunto_pas
+    if not conjunto_pas: 
+        return grafo, conjunto_pas
     
     pas_ativos = list(conjunto_pas)
     for _ in range(num_deslocamentos):
@@ -241,7 +300,10 @@ def deslocamento_global_pas(grafo: nx.DiGraph, conjunto_pas: list, num_deslocame
 
     return grafo, pas_ativos
 
-# --- Função de Convergência e Orquestração ---
+
+# =============================================================================
+# 6. CÁLCULO DE CONVERGÊNCIA (chamada no loop principal)
+# =============================================================================
 
 def calcular_gap_relativo(grafo: nx.DiGraph, viagens: dict, origens: list) -> float:
     """Calcula o 'Relative Gap', a métrica de convergência padrão."""
@@ -262,34 +324,13 @@ def calcular_gap_relativo(grafo: nx.DiGraph, viagens: dict, origens: list) -> fl
     
     return (tempo_total_viagem - tempo_viagem_spt) / tempo_total_viagem
 
-def executar_itapas(arquivo_rede: str, arquivo_viagens: str, max_iter: int, gap_convergencia: float):
-    """Função principal que orquestra a execução do algoritmo iTAPAS."""
-    grafo = carregar_rede(arquivo_rede)
-    viagens = carregar_viagens(arquivo_viagens)
-    origens = sorted(list(set(o for o, d in viagens.keys())))
-    conjunto_pas = []
-    
-    grafo = atribuicao_inicial(grafo, viagens)
-    
-    for i in range(max_iter):
-        print(f"\n--- Iteração Principal {i+1}/{max_iter} ---")
-        
-        for origem in origens:
-            grafo, conjunto_pas = processar_origem(grafo, origem, conjunto_pas)
-        
-        grafo, conjunto_pas = deslocamento_global_pas(grafo, conjunto_pas)
-        
-        gap = calcular_gap_relativo(grafo, viagens, origens)
-        print(f"Gap Relativo: {gap:.8e}")
-        if gap < gap_convergencia:
-            print("Convergência atingida!")
-            break
-    
-    print("\nAlocação finalizada.")
-    return grafo
 
+# =============================================================================
+# EXECUÇÃO
+# =============================================================================
 
 if __name__ == '__main__':
+
     grafo_final = executar_itapas(
         arquivo_rede='./example/edges.txt',
         arquivo_viagens='./example/od.txt',
