@@ -41,8 +41,9 @@ def executar_itapas(arquivo_rede: str, arquivo_viagens: str, max_iter: int, gap_
         print(f"\n--- Iteração Principal {i+1}/{max_iter} ---")
         
         for origem in origens:
+            print(f"\nProcessando origem {origem}...")
             grafo, conjunto_pas = processar_origem(grafo, origem, conjunto_pas)
-        
+        exit(0)
         grafo, conjunto_pas = deslocamento_global_pas(grafo, conjunto_pas)
         
         gap = calcular_gap_relativo(grafo, viagens, origens)
@@ -133,18 +134,20 @@ def processar_origem(grafo: nx.DiGraph, origem: int, conjunto_pas: list) -> (nx.
     # CORREÇÃO: Usa a chave 'custo' para o peso do Dijkstra
     preds, custos_spt = nx.dijkstra_predecessor_and_distance(grafo, source=origem, weight='custo')
     arcos_desequilibrados = identificar_arcos_desequilibrados(grafo, origem, custos_spt)
-    print(origem)
-    print(arcos_desequilibrados)
+    #print(origem)
+    #print(arcos_desequilibrados)
     while arcos_desequilibrados:
         u, v = arcos_desequilibrados.pop(0)
-        
+        #print(u,v)
         pas = identificar_pas_fluxo_maximo(grafo, u, v, origem, preds)
-        print(pas)
+        #print(pas["s1"])
+        #print(pas["s2"])
+        #print("-----\n")
         if not pas: 
             continue
 
         fluxo_deslocado, grafo = deslocar_fluxo_no_pas(grafo, pas)
-
+        print(f"Fluxo deslocado no PAS: {fluxo_deslocado:.6f}")
         if fluxo_deslocado > TOLERANCIA_FLUXO:
             conjunto_pas = adicionar_pas_ao_conjunto(conjunto_pas, pas)
             
@@ -176,7 +179,6 @@ def identificar_pas_fluxo_maximo(grafo: nx.DiGraph, u_deseq: int, v_deseq: int, 
         no_anterior = preds[no_atual][0]
         nos_caminho_s1.insert(0, no_anterior)
         no_atual = no_anterior
-    
     conjunto_nos_s1 = set(nos_caminho_s1)
     
     caminho_retroativo_s2 = []
