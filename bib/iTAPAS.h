@@ -2,369 +2,484 @@
 #include "igraph.h"
 #include "define.h"
 #include "calc.h"
-#include "network.h"
-#include "BPR.h"
 #include "mtwister.h"
 
-int ITAPAS_MAX_ITER = 1000;
+int ITAPAS_MAX_ITER = 100;
+double TAPAS_EPSILON = 1e-9;
 
-struct PAS{
-    igraph_vector_int_t c1;
-    igraph_vector_int_t c2;
-    int origem;
+/* Estrutura que representa um Par de Arcos Alternativos (PAS) */
+struct PAS {
+    igraph_vector_int_t c1;      /* Caminho 1 (arcos) */
+    igraph_vector_int_t c2;      /* Caminho 2 (arcos) */
+    int origem;                   /* Nó de origem do PAS */
 };
 
-/* Imprime o conteúdo de uma PAS */
-void pas_print(const struct PAS *pas,igraph_t *Grafo){
-    if(!pas) return;
-    printf("\n");
-    int i, n1 = igraph_vector_int_size(&pas->c1), n2 = igraph_vector_int_size(&pas->c2);
-    printf("PAS(fonte=%d)\n", pas->origem);
-    printf("  c1 (size=%d):", n1);
-    int from,to;
-    for(i = n1-1; i >= 0; i--){
-        to = IGRAPH_TO(Grafo, VECTOR(pas->c1)[i])+1;
-        from = IGRAPH_FROM(Grafo, VECTOR(pas->c1)[i])+1;
+/* ========================================================================
+   FUNÇÕES AUXILIARES PARA MANIPULAÇÃO DE PAS
+   ======================================================================== */
+
+void pas_print(const struct PAS *pas, igraph_t *Grafo) {
+    if (!pas) return;
+    
+    printf("\nPAS(fonte=%d)\n", pas->origem);
+    
+    int tamanho_c1 = igraph_vector_int_size(&pas->c1);
+    printf("  c1 (size=%d):", tamanho_c1);
+    for (int i = tamanho_c1 - 1; i >= 0; i--) {
+        int arco = VECTOR(pas->c1)[i];
+        int from = IGRAPH_FROM(Grafo, arco) + 1;
+        int to = IGRAPH_TO(Grafo, arco) + 1;
         printf(" (%d, %d)", from, to);
     }
-    printf("\n");
-    printf("  c2 (size=%d):", n2);
-    for(i = n2-1; i >= 0; i--){
-        to = IGRAPH_TO(Grafo, VECTOR(pas->c2)[i])+1;
-        from = IGRAPH_FROM(Grafo, VECTOR(pas->c2)[i])+1;
+    
+    printf("\n  c2 (size=%ld):", igraph_vector_int_size(&pas->c2));
+    for (int i = igraph_vector_int_size(&pas->c2) - 1; i >= 0; i--) {
+        int arco = VECTOR(pas->c2)[i];
+        int from = IGRAPH_FROM(Grafo, arco) + 1;
+        int to = IGRAPH_TO(Grafo, arco) + 1;
         printf(" (%d, %d)", from, to);
     }
-    printf("\n");
-    printf("\n");
+    printf("\n\n");
 }
 
-/* Libera os recursos internos de uma PAS (não libera o ponteiro PAS em si) */
-void pas_free(struct PAS *pas){
-    if(!pas) return;
-    /* destruir vetores internos */
+void pas_free(struct PAS *pas) {
+    if (!pas) return;
     igraph_vector_int_destroy(&pas->c1);
     igraph_vector_int_destroy(&pas->c2);
-    /* opcional: limpar campos */
     pas->origem = 0;
 }
 
-/* Remove o elemento no índice idx de um vetor dinâmico de PAS.
-   vec: ponteiro para o array de PAS (será realocado)
-   n: ponteiro para o tamanho atual do array (será atualizado)
-*/
-void pas_remove_at(struct PAS **vec, int *n, int idx){
-    if(!vec || !(*vec) || !n) return;
-    if(idx < 0 || idx >= *n) return;
-    /* destruir o conteúdo do PAS que será removido */
-    pas_free(&(*vec)[idx]);
-
-    /* mover os elementos posteriores para preencher o buraco */
-    if(idx < (*n - 1)){
-        memmove(&(*vec)[idx], &(*vec)[idx + 1], ((*n - 1) - idx) * sizeof(struct PAS));
+void pas_remove_at(struct PAS **vec, int *tamanho, int indice) {
+    if (!vec || !(*vec) || !tamanho) return;
+    if (indice < 0 || indice >= *tamanho) return;
+    
+    pas_free(&(*vec)[indice]);
+    
+    if (indice < (*tamanho - 1)) {
+        memmove(&(*vec)[indice], &(*vec)[indice + 1], 
+                ((*tamanho - 1) - indice) * sizeof(struct PAS));
     }
-
-    /* reduzir o tamanho do array */
-    int new_n = *n - 1;
-    if(new_n > 0){
-        struct PAS *tmp = (struct PAS*) realloc(*vec, new_n * sizeof(struct PAS));
-        if(tmp) {
-            *vec = tmp;
-        } /* se realloc falhar, mantemos o bloco anterior; o tamanho lógico será atualizado abaixo */
+    
+    int novo_tamanho = *tamanho - 1;
+    if (novo_tamanho > 0) {
+        struct PAS *tmp = (struct PAS*) realloc(*vec, novo_tamanho * sizeof(struct PAS));
+        if (tmp) *vec = tmp;
     } else {
-        /* novo tamanho zero: liberar o bloco e definir ponteiro NULL */
         free(*vec);
         *vec = NULL;
     }
-    *n = new_n;
+    *tamanho = novo_tamanho;
 }
 
+/* ========================================================================
+   CÁLCULO DE CUSTOS E DERIVADAS
+   ======================================================================== */
 
-
-double deslocar_fluxo_no_pas(igraph_t* Grafo, struct PARAMETERS* BPR_PARAMETERS, struct PAS* pas, igraph_vector_t solucao,int fonte){
-    char origin[20];
-    sprintf(origin, "demanda_%d", fonte);
-    int L = igraph_vector_int_size(&pas->c1),alvo,edge_id,i ;
+static void calcular_custos_caminho(igraph_t *Grafo, 
+                                     struct PARAMETERS *BPR_PARAMETERS,
+                                     igraph_vector_int_t *caminho,
+                                     igraph_vector_t solucao,
+                                     const char *origem_attr,
+                                     double *tempo_total,
+                                     double *derivada_total,
+                                     double *capacidade_minima) {
+    *tempo_total = 0.0;
+    *derivada_total = 0.0;
+    *capacidade_minima = 1e10;
     
-    double capacidade, fluxo_atual, delta_fluxo = 0,denominador = 0.0,time_1 = 0,time_2 = 0,dtime_1 = 0,dtime_2 = 0;
-    double mu1 = 1e10, mu2 = 1e10;
-
-    for(i = 0; i < L; i++){
-        edge_id = VECTOR(pas->c1)[i];
-        time_1 += single_BPR(VECTOR(solucao)[edge_id], VECTOR(BPR_PARAMETERS->cost_time)[edge_id], VECTOR(BPR_PARAMETERS->capacidade)[edge_id]);
-        dtime_1 += single_BPR_derivate(VECTOR(solucao)[edge_id], VECTOR(BPR_PARAMETERS->cost_time)[edge_id], VECTOR(BPR_PARAMETERS->capacidade)[edge_id]);
-        mu1 = fmin(mu1,EAN(Grafo,origin,edge_id));
-    }
-    L = igraph_vector_int_size(&pas->c2);
-    for(i = 0; i < L; i++){
-        edge_id = VECTOR(pas->c2)[i];
-        time_2 += single_BPR(VECTOR(solucao)[edge_id], VECTOR(BPR_PARAMETERS->cost_time)[edge_id], VECTOR(BPR_PARAMETERS->capacidade)[edge_id]);
-        dtime_2 += single_BPR_derivate(VECTOR(solucao)[edge_id], VECTOR(BPR_PARAMETERS->cost_time)[edge_id], VECTOR(BPR_PARAMETERS->capacidade)[edge_id]);
-        mu2 = fmin(mu2,EAN(Grafo,origin,edge_id));
-    }
-
-    denominador = dtime_1 + dtime_2;
-    delta_fluxo = (time_2 - time_1) / denominador;
-    //printf("Delta fluxo calculado: %f %f %f\n",delta_fluxo,mu2,mu1);
-
-    if(fabs(delta_fluxo) > 1e-9){
-        if(delta_fluxo > 0){
-            delta_fluxo = fmin(delta_fluxo, mu2);
-            double cost;
-            L = igraph_vector_int_size(&pas->c1);
-            for(i = 0; i < L; i++){
-                edge_id = VECTOR(pas->c1)[i];
-                if(edge_id == -1) break;
-                VECTOR(solucao)[edge_id] += delta_fluxo;
-                cost = EAN(Grafo,origin,edge_id);
-                igraph_cattribute_EAN_set(Grafo,origin,edge_id,cost + delta_fluxo);
-            }
-            L = igraph_vector_int_size(&pas->c2);
-            for(i = 0; i < L; i++){
-                edge_id = VECTOR(pas->c2)[i];
-                if(edge_id == -1) break;
-                VECTOR(solucao)[edge_id] -= delta_fluxo;
-                cost = EAN(Grafo,origin,edge_id);
-                igraph_cattribute_EAN_set(Grafo,origin,edge_id,cost - delta_fluxo);
-            }
-            return delta_fluxo;
-
-        } else {
-            delta_fluxo = -delta_fluxo;
-            delta_fluxo = fmin(delta_fluxo, mu1);
-            double cost;
-            L = igraph_vector_int_size(&pas->c1);
-            for(i = 0; i < L; i++){
-                edge_id = VECTOR(pas->c1)[i];
-                if(edge_id == -1) break;
-                VECTOR(solucao)[edge_id] -= delta_fluxo;
-                cost = EAN(Grafo,origin,edge_id);
-                igraph_cattribute_EAN_set(Grafo,origin,edge_id,cost - delta_fluxo);
-            }
-            L = igraph_vector_int_size(&pas->c2);
-            for(i = 0; i < L; i++){
-                edge_id = VECTOR(pas->c2)[i];
-                if(edge_id == -1) break;
-                VECTOR(solucao)[edge_id] += delta_fluxo;
-                cost = EAN(Grafo,origin,edge_id);
-                igraph_cattribute_EAN_set(Grafo,origin,edge_id,cost + delta_fluxo);
-            }
-            return delta_fluxo;
-        }
-    }
-    else return 0.0;
-}
-
-void deslocamento_global_pas(struct PARAMETERS* BPR_PARAMETERS,struct OD_MATRIX *OD,igraph_t* Grafo,struct PAS* conjunto_pas,int *n_pas, igraph_vector_t *solucao){
-    int i,L,j;
-    double dx,mu;
-    if(*n_pas > 0){
-        for(i = 0; i < *n_pas; i++){
-            struct PAS* pas = &conjunto_pas[i];
-            L = igraph_vector_int_size(&pas->c2);
-            mu = 1e10;
-            for(j = 0; j < L; j++){
-                int edge_id = VECTOR(pas->c2)[j];
-                if(edge_id == -1) break;
-                char origin[20];
-                sprintf(origin, "demanda_%d", pas->origem);
-                mu = fmin(mu,EAN(Grafo,origin,edge_id));
-            }
-            if(mu < 1e-9){
-                pas_free(pas);
-                pas_remove_at(&conjunto_pas, n_pas, i);
-                i--; // Ajustar índice após remoção
-                continue;
-            }
-            else{
-                deslocar_fluxo_no_pas(Grafo, BPR_PARAMETERS, pas, *solucao, pas->origem);
-            }
-        }
-
+    int num_arcos = igraph_vector_int_size(caminho);
+    for (int i = 0; i < num_arcos; i++) {
+        int arco_id = VECTOR(*caminho)[i];
+        double fluxo = VECTOR(solucao)[arco_id];
+        double tempo_livre = VECTOR(BPR_PARAMETERS->cost_time)[arco_id];
+        double capacidade = VECTOR(BPR_PARAMETERS->capacidade)[arco_id];
+        
+        *tempo_total += single_BPR(fluxo, tempo_livre, capacidade);
+        *derivada_total += single_BPR_derivate(fluxo, tempo_livre, capacidade);
+        *capacidade_minima = fmin(*capacidade_minima, EAN(Grafo, origem_attr, arco_id));
     }
 }
 
-void identificar_pas_fluxo_maximo(igraph_t* Grafo,int edge_id,int fonte,igraph_vector_int_t *inbounds,struct PAS* pas){
-    char origin[20];
-    sprintf(origin, "demanda_%d", fonte);
-    int cabeca = IGRAPH_TO(Grafo, edge_id),id,i,id_big;
-    double cost = 0.0;
-    int N = igraph_vector_int_size(inbounds);
-    bool* visited = (bool*) calloc(N, sizeof(bool));
-    igraph_vector_int_t in_edges;
-    igraph_vector_int_init(&in_edges, 0);
+/* ========================================================================
+   DESLOCAMENTO DE FLUXO
+   ======================================================================== */
 
+double deslocar_fluxo_no_pas(igraph_t *Grafo, 
+                              struct PARAMETERS *BPR_PARAMETERS,
+                              struct PAS *pas, 
+                              igraph_vector_t solucao,
+                              int fonte) {
+    char origem_attr[20];
+    sprintf(origem_attr, "demanda_%d", fonte);
+    
+    double tempo_c1, tempo_c2, derivada_c1, derivada_c2;
+    double capacidade_c1, capacidade_c2;
+    
+    calcular_custos_caminho(Grafo, BPR_PARAMETERS, &pas->c1, solucao,
+                            origem_attr, &tempo_c1, &derivada_c1, &capacidade_c1);
+    
+    calcular_custos_caminho(Grafo, BPR_PARAMETERS, &pas->c2, solucao,
+                            origem_attr, &tempo_c2, &derivada_c2, &capacidade_c2);
+    
+    double denominador = derivada_c1 + derivada_c2;
+    double delta_fluxo = (tempo_c2 - tempo_c1) / denominador;
+    
+    if (fabs(delta_fluxo) <= TAPAS_EPSILON) {
+        return 0.0;
+    }
+    
+    /* Determina direção e magnitude do deslocamento */
+    igraph_vector_int_t *caminho_origem, *caminho_destino;
+    double capacidade_limite;
+    
+    if (delta_fluxo > 0) {
+        delta_fluxo = fmin(delta_fluxo, capacidade_c2);
+        caminho_origem = &pas->c1;
+        caminho_destino = &pas->c2;
+    } else {
+        delta_fluxo = fmin(-delta_fluxo, capacidade_c1);
+        caminho_origem = &pas->c2;
+        caminho_destino = &pas->c1;
+    }
+    
+    /* Atualiza fluxos no caminho de origem (adiciona fluxo) */
+    for (int i = 0; i < igraph_vector_int_size(caminho_origem); i++) {
+        int arco = VECTOR(*caminho_origem)[i];
+        if (arco == -1) break;
+        
+        VECTOR(solucao)[arco] += delta_fluxo;
+        double custo_atual = EAN(Grafo, origem_attr, arco);
+        igraph_cattribute_EAN_set(Grafo, origem_attr, arco, custo_atual + delta_fluxo);
+    }
+    
+    /* Atualiza fluxos no caminho de destino (remove fluxo) */
+    for (int i = 0; i < igraph_vector_int_size(caminho_destino); i++) {
+        int arco = VECTOR(*caminho_destino)[i];
+        if (arco == -1) break;
+        
+        VECTOR(solucao)[arco] -= delta_fluxo;
+        double custo_atual = EAN(Grafo, origem_attr, arco);
+        igraph_cattribute_EAN_set(Grafo, origem_attr, arco, custo_atual - delta_fluxo);
+    }
+    
+    return delta_fluxo;
+}
+
+void deslocamento_global_pas(struct PARAMETERS *BPR_PARAMETERS,
+                              struct OD_MATRIX *OD,
+                              igraph_t *Grafo,
+                              struct PAS *conjunto_pas,
+                              int *num_pas,
+                              igraph_vector_t *solucao) {
+    if (*num_pas <= 0) return;
+    
+    for (int i = 0; i < *num_pas; i++) {
+        struct PAS *pas_atual = &conjunto_pas[i];
+        
+        /* Verifica capacidade mínima do caminho c2 */
+        char origem_attr[20];
+        sprintf(origem_attr, "demanda_%d", pas_atual->origem);
+        
+        double capacidade_min = 1e10;
+        int num_arcos_c2 = igraph_vector_int_size(&pas_atual->c2);
+        
+        for (int j = 0; j < num_arcos_c2; j++) {
+            int arco = VECTOR(pas_atual->c2)[j];
+            if (arco == -1) break;
+            capacidade_min = fmin(capacidade_min, EAN(Grafo, origem_attr, arco));
+        }
+        
+        /* Remove PAS se capacidade é muito pequena */
+        if (capacidade_min < TAPAS_EPSILON) {
+            pas_free(pas_atual);
+            pas_remove_at(&conjunto_pas, num_pas, i);
+            i--;
+            continue;
+        }
+        
+        deslocar_fluxo_no_pas(Grafo, BPR_PARAMETERS, pas_atual, *solucao, pas_atual->origem);
+    }
+}
+
+/* ========================================================================
+   IDENTIFICAÇÃO DE PAS
+   ======================================================================== */
+
+void identificar_pas_fluxo_maximo(igraph_t *Grafo,
+                                   int arco_inicial,
+                                   int fonte,
+                                   igraph_vector_int_t *antecessores,
+                                   struct PAS *pas) {
+    char origem_attr[20];
+    sprintf(origem_attr, "demanda_%d", fonte);
+    
     pas->origem = fonte;
     igraph_vector_int_init(&pas->c1, 0);
     igraph_vector_int_init(&pas->c2, 0);
-    while(cabeca != fonte){
-        id = VECTOR(*inbounds)[cabeca];
-        if(id == -1) break;
-        // Processar a aresta id conforme necessário
-        cabeca = IGRAPH_FROM(Grafo, id);
+    
+    int num_nos = igraph_vector_int_size(antecessores);
+    bool *visitado = (bool*) calloc(num_nos, sizeof(bool));
+    
+    /* Constrói caminho c1: do nó cabeça até a fonte usando antecessores */
+    int no_atual = IGRAPH_TO(Grafo, arco_inicial);
+    while (no_atual != fonte) {
+        int arco = VECTOR(*antecessores)[no_atual];
+        if (arco == -1) break;
         
-        igraph_vector_int_push_back(&pas->c1, id);
-        visited[cabeca] = true;
+        igraph_vector_int_push_back(&pas->c1, arco);
+        visitado[no_atual] = true;
+        no_atual = IGRAPH_FROM(Grafo, arco);
     }
-    cabeca = IGRAPH_FROM(Grafo, edge_id);
-    id_big = -1;
-    igraph_vector_int_push_back(&pas->c2, edge_id);
-    while(!visited[cabeca]){
-        igraph_incident(Grafo, &in_edges, cabeca, IGRAPH_IN,IGRAPH_NO_LOOPS);
-        int n_in_edges = igraph_vector_int_size(&in_edges);
-        for(int i = 0; i < n_in_edges; i++){
-            id = VECTOR(in_edges)[i];
-            //printf("%d %f\n",id,EAN(Grafo,origin,id));
-            if(EAN(Grafo,origin,id) > cost){
-                cost = EAN(Grafo,origin,id);
-                id_big = id;
-            }
+    visitado[no_atual] = true;
+    
+    /* Constrói caminho c2: do nó cauda até encontrar c1, usando arco de maior fluxo */
+    no_atual = IGRAPH_FROM(Grafo, arco_inicial);
+    igraph_vector_int_push_back(&pas->c2, arco_inicial);
+    
+    igraph_vector_int_t arcos_entrantes;
+    igraph_vector_int_init(&arcos_entrantes, 0);
+    
+    while (!visitado[no_atual]) {
+        igraph_incident(Grafo, &arcos_entrantes, no_atual, IGRAPH_IN, IGRAPH_NO_LOOPS);
+        
+        int melhor_arco = -1;
+        double maior_fluxo = 0.0;
+        
+        int num_entrantes = igraph_vector_int_size(&arcos_entrantes);
+        for (int i = 0; i < num_entrantes; i++) {
+            int arco = VECTOR(arcos_entrantes)[i];
+            double fluxo = EAN(Grafo, origem_attr, arco);
             
+            if (fluxo > maior_fluxo) {
+                maior_fluxo = fluxo;
+                melhor_arco = arco;
+            }
         }
-        cost = 0.0;
-        if(id_big == -1) break;
-        igraph_vector_int_push_back(&pas->c2, id_big);
-        cabeca = IGRAPH_FROM(Grafo, id_big);
-        if(cabeca == fonte) break;
+        
+        if (melhor_arco == -1) break;
+        
+        igraph_vector_int_push_back(&pas->c2, melhor_arco);
+        no_atual = IGRAPH_FROM(Grafo, melhor_arco);
+        
+        if (no_atual == fonte) break;
     }
-    while(cabeca != fonte){
-        id = VECTOR(*inbounds)[cabeca];
-        if(id == -1) break;
-        // Processar a aresta id conforme necessário
+    
+    /* Remove elementos de c1 que estão após o ponto de encontro */
+    while (no_atual != fonte) {
+        int arco = VECTOR(*antecessores)[no_atual];
+        if (arco == -1) break;
+        
         igraph_vector_int_pop_back(&pas->c1);
-        cabeca = IGRAPH_FROM(Grafo, id);
+        no_atual = IGRAPH_FROM(Grafo, arco);
     }
-    igraph_vector_int_destroy(&in_edges);
-    free(visited);
-    //exit(0);
+    
+    igraph_vector_int_destroy(&arcos_entrantes);
+    free(visitado);
 }
 
-void processar_origem(struct PARAMETERS* BPR_PARAMETERS,struct OD_MATRIX *OD,igraph_t* Grafo,int o,igraph_vector_t *solucao, struct PAS* conjunto_pas,int *n_pas){
-    int fonte = OD->Elementos[o].fonte,i,from,to;
-    double custo;
-    char origin[20];
-    sprintf(origin, "demanda_%d", fonte);
+/* ========================================================================
+   PROCESSAMENTO POR ORIGEM
+   ======================================================================== */
 
-    igraph_vector_t tempo,cost;
-    igraph_vector_int_t removed_edges,max_path,inbounds;
-
-    igraph_vector_int_init(&removed_edges, 0);
-    igraph_vector_int_init(&max_path, 0);
-    igraph_vector_int_init(&inbounds, 0);
+void processar_origem(struct PARAMETERS *BPR_PARAMETERS,
+                      struct OD_MATRIX *OD,
+                      igraph_t *Grafo,
+                      int indice_origem,
+                      igraph_vector_t *solucao,
+                      struct PAS **conjunto_pas,
+                      int *num_pas) {
+    int fonte = OD->Elementos[indice_origem].fonte;
+    char origem_attr[20];
+    sprintf(origem_attr, "demanda_%d", fonte);
     
-    igraph_vector_init(&tempo, BPR_PARAMETERS->L);
-    igraph_vector_init(&cost, BPR_PARAMETERS->N);
-    BPR(&tempo, BPR_PARAMETERS, solucao); // Atualiza o tempo de cada aresta com base no fluxo atual
-    igraph_get_shortest_paths_dijkstra(
-        Grafo, NULL,NULL,fonte,igraph_vss_all(),&tempo, IGRAPH_OUT,NULL,&inbounds
-    );
-    for(i= 0;i<BPR_PARAMETERS->N;i++){
-        int alvo = i;
-        while(alvo != fonte){
-            int edge_id = VECTOR(inbounds)[alvo];
-            if(edge_id == -1) break;
-            VECTOR(cost)[i] += VECTOR(tempo)[edge_id];
-            alvo = IGRAPH_FROM(Grafo, edge_id);
+    igraph_vector_t tempo_arcos, custo_nos;
+    igraph_vector_int_t arcos_removidos, antecessores;
+    
+    igraph_vector_init(&tempo_arcos, BPR_PARAMETERS->L);
+    igraph_vector_init(&custo_nos, BPR_PARAMETERS->N);
+    igraph_vector_int_init(&arcos_removidos, 0);
+    igraph_vector_int_init(&antecessores, 0);
+    
+    /* Calcula tempos de viagem e caminho mais curto */
+    BPR(&tempo_arcos, BPR_PARAMETERS, solucao);
+    igraph_get_shortest_paths_dijkstra(Grafo, NULL, NULL, fonte, igraph_vss_all(),
+                                       &tempo_arcos, IGRAPH_OUT, NULL, &antecessores);
+    
+    /* Calcula custos mínimos de cada nó até a fonte */
+    for (int no = 0; no < BPR_PARAMETERS->N; no++) {
+        VECTOR(custo_nos)[no] = 0.0;
+        int no_atual = no;
+        
+        while (no_atual != fonte) {
+            int arco = VECTOR(antecessores)[no_atual];
+            if (arco == -1) break;
+            
+            VECTOR(custo_nos)[no] += VECTOR(tempo_arcos)[arco];
+            no_atual = IGRAPH_FROM(Grafo, arco);
         }
     }
-    for(i= 0;i<BPR_PARAMETERS->L;i++){
-        from = IGRAPH_FROM(Grafo, i);
-        to = IGRAPH_TO(Grafo, i);
-        custo = EAN(Grafo,origin,i);
-        if(custo > 1e-9){
-            custo = VECTOR(tempo)[i] + VECTOR(cost)[from] - VECTOR(cost)[to];
-            if(custo > 1e-9){
-                //printf("Removed edge: %d from %d to %d with reduced cost %f\n",i,from,to,custo);
-                igraph_vector_int_push_back(&removed_edges, i);
-            }
+    
+    /* Identifica arcos com custo reduzido positivo e fluxo positivo */
+    for (int arco = 0; arco < BPR_PARAMETERS->L; arco++) {
+        double fluxo = EAN(Grafo, origem_attr, arco);
+        if (fluxo <= TAPAS_EPSILON) continue;
+        
+        int no_origem = IGRAPH_FROM(Grafo, arco);
+        int no_destino = IGRAPH_TO(Grafo, arco);
+        
+        double custo_reduzido = VECTOR(tempo_arcos)[arco] + 
+                                VECTOR(custo_nos)[no_origem] - 
+                                VECTOR(custo_nos)[no_destino];
+        
+        if (custo_reduzido > TAPAS_EPSILON) {
+            igraph_vector_int_push_back(&arcos_removidos, arco);
         }
-        // Armazena ou processa a distância conforme necessário
     }
-
-    int L = igraph_vector_int_size(&removed_edges);
-    double dx;
-    for(i = 0;i<L;i++){
-        struct PAS new_pas;
-        int edge_id = VECTOR(removed_edges)[i];
-        //printf("Processing removed edge %d from %ld to %ld\n",edge_id,IGRAPH_FROM(Grafo, edge_id)+1,IGRAPH_TO(Grafo, edge_id)+1);
-        from = IGRAPH_FROM(Grafo, edge_id);
-        to = IGRAPH_TO(Grafo, edge_id);
-        identificar_pas_fluxo_maximo(Grafo, edge_id, fonte, &inbounds,&new_pas);
-        //pas_print(&new_pas,Grafo);
-        dx = deslocar_fluxo_no_pas(Grafo, BPR_PARAMETERS, &new_pas, *solucao, fonte);
-        printf("dx = %f\n",dx);
-        if(fabs(dx) < 1e-9){
-            pas_free(&new_pas);
+    
+    /* Processa cada arco candidato à remoção */
+    int num_candidatos = igraph_vector_int_size(&arcos_removidos);
+    for (int i = 0; i < num_candidatos; i++) {
+        struct PAS novo_pas;
+        int arco = VECTOR(arcos_removidos)[i];
+        
+        identificar_pas_fluxo_maximo(Grafo, arco, fonte, &antecessores, &novo_pas);
+        double deslocamento = deslocar_fluxo_no_pas(Grafo, BPR_PARAMETERS, &novo_pas, 
+                                                     *solucao, fonte);
+        
+        if (fabs(deslocamento) < TAPAS_EPSILON) {
+            pas_free(&novo_pas);
             continue;
         }
-        else{
-            conjunto_pas = (struct PAS*) realloc(conjunto_pas,  (*n_pas + 1) * sizeof(struct PAS));
-            if(conjunto_pas == NULL) exit(0);
-            conjunto_pas[*n_pas] = new_pas;
-            (*n_pas)++;
+        
+        /* Adiciona novo PAS ao conjunto */
+        struct PAS *tmp = (struct PAS*) realloc(*conjunto_pas, 
+                                                 (*num_pas + 1) * sizeof(struct PAS));
+        if (tmp == NULL) {
+            pas_free(&novo_pas);
+            perror("Falha ao alocar memória para novo PAS");
+            exit(EXIT_FAILURE);
         }
-        //exit(0);
-        //double delta_fluxo = deslocar_fluxo_no_pas(Grafo, BPR_PARAMETERS, &new_pas.c1, &inbounds, *solucao, fonte);
+        
+        *conjunto_pas = tmp;
+        (*conjunto_pas)[*num_pas] = novo_pas;
+        (*num_pas)++;
     }
-
-    //exit(0);
-    igraph_vector_destroy(&tempo);
-    igraph_vector_int_destroy(&removed_edges);
-
+    
+    igraph_vector_destroy(&tempo_arcos);
+    igraph_vector_destroy(&custo_nos);
+    igraph_vector_int_destroy(&arcos_removidos);
+    igraph_vector_int_destroy(&antecessores);
 }
 
-void atribuicao_inicial(struct PARAMETERS* BPR_PARAMETERS,struct OD_MATRIX *OD,igraph_t* Grafo,int o,igraph_vector_t *solucao){
+/* ========================================================================
+   ATRIBUIÇÃO INICIAL (ALL-OR-NOTHING)
+   ======================================================================== */
 
-    int i,j,fonte = OD->Elementos[o].fonte;
-    igraph_vector_int_t inbound;
-    igraph_vector_t demanda;
-    igraph_vector_int_init(&inbound, 0);
-    igraph_vector_init(&demanda, BPR_PARAMETERS->L);
-    igraph_get_shortest_paths_dijkstra(
-        Grafo, NULL,NULL,fonte,igraph_vss_all(),&BPR_PARAMETERS->cost_time, IGRAPH_OUT,NULL,&inbound
-    );
-    int n= igraph_vector_int_size(&OD->Elementos[o].alvos);
-    for(j = 0; j < n; j++){
-        int alvo = VECTOR(OD->Elementos[o].alvos)[j];
-        int antecessor = alvo;
-        while(antecessor != fonte){
-            int index = VECTOR(inbound)[antecessor];
-            if(index == -1) exit(0); // Se não encontrar a aresta, encerra o programa
-            VECTOR(demanda)[index] += VECTOR(OD->Elementos[o].volumes)[j];
-            VECTOR(*solucao)[index] += VECTOR(OD->Elementos[o].volumes)[j];
-            antecessor = IGRAPH_FROM(Grafo, index);
+void atribuicao_inicial(struct PARAMETERS *BPR_PARAMETERS,
+                        struct OD_MATRIX *OD,
+                        igraph_t *Grafo,
+                        int indice_origem,
+                        igraph_vector_t *solucao) {
+    int fonte = OD->Elementos[indice_origem].fonte;
+    
+    igraph_vector_int_t antecessores;
+    igraph_vector_t demanda_arcos;
+    
+    igraph_vector_int_init(&antecessores, 0);
+    igraph_vector_init(&demanda_arcos, BPR_PARAMETERS->L);
+    
+    /* Calcula caminhos mínimos com tempo livre de fluxo */
+    igraph_get_shortest_paths_dijkstra(Grafo, NULL, NULL, fonte, igraph_vss_all(),
+                                       &BPR_PARAMETERS->cost_time, IGRAPH_OUT, 
+                                       NULL, &antecessores);
+    
+    /* Atribui demanda aos caminhos mínimos */
+    int num_destinos = igraph_vector_int_size(&OD->Elementos[indice_origem].alvos);
+    for (int i = 0; i < num_destinos; i++) {
+        int destino = VECTOR(OD->Elementos[indice_origem].alvos)[i];
+        double volume = VECTOR(OD->Elementos[indice_origem].volumes)[i];
+        
+        int no_atual = destino;
+        while (no_atual != fonte) {
+            int arco = VECTOR(antecessores)[no_atual];
+            if (arco == -1) {
+                fprintf(stderr, "Erro: caminho não encontrado de %d para %d\n", fonte, destino);
+                exit(EXIT_FAILURE);
+            }
+            
+            VECTOR(demanda_arcos)[arco] += volume;
+            VECTOR(*solucao)[arco] += volume;
+            no_atual = IGRAPH_FROM(Grafo, arco);
         }
     }
-    char origin[20];
-    sprintf(origin, "demanda_%d", fonte);
-    igraph_cattribute_EAN_setv(Grafo, origin, &demanda);
-    igraph_vector_int_destroy(&inbound);
-    igraph_vector_destroy(&demanda);    
+    
+    char origem_attr[20];
+    sprintf(origem_attr, "demanda_%d", fonte);
+    igraph_cattribute_EAN_setv(Grafo, origem_attr, &demanda_arcos);
+    
+    igraph_vector_int_destroy(&antecessores);
+    igraph_vector_destroy(&demanda_arcos);
 }
 
-void iTAPAS(struct PARAMETERS* BPR_PARAMETERS,struct OD_MATRIX *OD,igraph_t* Grafo,igraph_vector_t *solucao){
-    igraph_t bush_graph;
-    igraph_vector_t tempo;
-    igraph_vector_init(&tempo, BPR_PARAMETERS->L);
-    igraph_vector_init(solucao,BPR_PARAMETERS->L);
-    igraph_copy(&bush_graph, Grafo);
-    int i, fonte, n_pas = 0;
+/* ========================================================================
+   ALGORITMO PRINCIPAL iTAPAS
+   ======================================================================== */
 
-    struct PAS* conjunto_pas = (struct PAS*) malloc(0 * sizeof(struct PAS));
-
-    for (i = 0; i < OD->size; i++){
-        atribuicao_inicial(BPR_PARAMETERS,OD,&bush_graph,i,solucao);
-        printf("Initial assignment for origin %d completed.\n", OD->Elementos[i].fonte);
+void iTAPAS(struct PARAMETERS *BPR_PARAMETERS,
+            struct OD_MATRIX *OD,
+            igraph_t *Grafo,
+            igraph_vector_t *solucao) {
+    igraph_t grafo_bush;
+    igraph_copy(&grafo_bush, Grafo);
+    
+    igraph_vector_init(solucao, BPR_PARAMETERS->L);
+    
+    struct PAS *conjunto_pas = NULL;
+    int num_pas = 0;
+    
+    /* Fase 1: Atribuição inicial (all-or-nothing) */
+    printf("=== Atribuição Inicial ===\n");
+    for (int i = 0; i < OD->size; i++) {
+        atribuicao_inicial(BPR_PARAMETERS, OD, &grafo_bush, i, solucao);
     }
-
-
-
-    for(i = 0; i < ITAPAS_MAX_ITER; i++){
-        for(int o = 0; o < OD->size; o++){
-            printf(" ===== Processing origin %d at iteration %d ===== \n", OD->Elementos[o].fonte, i+1);
-            processar_origem(BPR_PARAMETERS,OD,&bush_graph,o,solucao,conjunto_pas,&n_pas);
+    
+    /* Fase 2: Iterações de equilíbrio */
+    printf("\n=== Iterações de Equilíbrio ===\n");
+    for (int iteracao = 0; iteracao < ITAPAS_MAX_ITER; iteracao++) {
+        /* Processa cada origem */
+        for (int o = 0; o < OD->size; o++) {
+            processar_origem(BPR_PARAMETERS, OD, &grafo_bush, o, solucao, 
+                           &conjunto_pas, &num_pas);
         }
-        exit(0);
-        deslocamento_global_pas(BPR_PARAMETERS, OD, &bush_graph, conjunto_pas, &n_pas, solucao);
-
+        
+        /* Deslocamento global de fluxo */
+        deslocamento_global_pas(BPR_PARAMETERS, OD, &grafo_bush, 
+                               conjunto_pas, &num_pas, solucao);
+        
+        /* Calcula e verifica critério de convergência */
+        double gap = relative_gap(solucao, &grafo_bush, BPR_PARAMETERS, OD);
+        printf("Iteração %3d | GAP: %.6e | PAS ativos: %d\n", 
+               iteracao + 1, gap, num_pas);
+        
+        if (gap < 1e-10) {
+            printf("\nConvergência alcançada!\n");
+            break;
+        }
     }
+    
+    /* Libera memória do conjunto de PAS */
+    for (int i = 0; i < num_pas; i++) {
+        pas_free(&conjunto_pas[i]);
+    }
+    free(conjunto_pas);
+    
+    /* Imprime solução final */
+    printf("\n=== Fluxos Finais ===\n");
+    for (int i = 0; i < BPR_PARAMETERS->L; i++) {
+        if (VECTOR(*solucao)[i] > TAPAS_EPSILON) {
+            printf("Arco %4d: %10.2f\n", i, VECTOR(*solucao)[i]);
+        }
+    }
+    
+    igraph_destroy(&grafo_bush);
 }

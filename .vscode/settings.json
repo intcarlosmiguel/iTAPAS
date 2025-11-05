@@ -1,5 +1,10 @@
 {
     "files.associations": {
-        "mtwister.h": "c"
+        "mtwister.h": "c",
+        "chrono": "c",
+        "variant": "c",
+        "define.h": "c",
+        "igraph.h": "c",
+        "ctype.h": "c"
     }
 }

@@ -1,6 +1,5 @@
 #pragma once
 #include "igraph.h"
-#include "network.h"
 #include "define.h"
 #include "dial.h"
 #include "simulate.h"

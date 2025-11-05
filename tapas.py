@@ -38,12 +38,9 @@ def executar_itapas(arquivo_rede: str, arquivo_viagens: str, max_iter: int, gap_
     grafo = atribuicao_inicial(grafo, viagens)
     
     for i in range(max_iter):
-        print(f"\n--- Iteração Principal {i+1}/{max_iter} ---")
         
         for origem in origens:
-            print(f"\nProcessando origem {origem}...")
             grafo, conjunto_pas = processar_origem(grafo, origem, conjunto_pas)
-        exit(0)
         grafo, conjunto_pas = deslocamento_global_pas(grafo, conjunto_pas)
         
         gap = calcular_gap_relativo(grafo, viagens, origens)

@@ -2,11 +2,9 @@
 #include "igraph.h"
 #include "define.h"
 #include "calc.h"
-#include "network.h"
-#include "example.h"
-#include "BPR.h"
 #include "mtwister.h"
 #include "dial.h"
+#include "leblanc.h"
 #include "iTAPAS.h"
 
 #include <sys/stat.h>
@@ -57,15 +55,13 @@ void init_time(double* initial_time, struct PARAMETERS BPR_PARAMETERS, struct OD
     igraph_vector_destroy(&free_flow);
 }
 
-void init_simulate(struct PARAMETERS* BPR_PARAMETERS,struct OD_MATRIX *OD,igraph_vector_t *solucao,igraph_vector_int_t * edges){
+void init_simulate(struct PARAMETERS* BPR_PARAMETERS,struct OD_MATRIX *OD,igraph_vector_t *solucao,igraph_vector_int_t * edges,const char* algoritmo){
     igraph_t Grafo;
     igraph_empty(&Grafo, BPR_PARAMETERS->N, IGRAPH_DIRECTED);
     igraph_add_edges(&Grafo, edges, NULL);
-    char algoritmo[1000];
-    snprintf(algoritmo, sizeof(algoritmo), "iTAPAS");
     if (strcmp(algoritmo, "Leblanc") == 0) {
         printf("Using Leblanc's algorithm for shortest paths.\n");
-        leblanc(BPR_PARAMETERS, NULL, OD, &Grafo, solucao);
+        leblanc(BPR_PARAMETERS, OD, &Grafo, solucao);
     } else if (strcmp(algoritmo, "Dial") == 0) {
         struct BUSH* bushes;
         printf("Using Dial's algorithm for shortest paths.\n");
@@ -103,7 +99,7 @@ void init_simulate(struct PARAMETERS* BPR_PARAMETERS,struct OD_MATRIX *OD,igraph
 
 
 
-void simulate_example(const char* arquivoEDGES,const char* arquivoOD){
+void simulate_example(const char* arquivoEDGES,const char* arquivoOD,const char* algoritmo){
 
     struct PARAMETERS BPR_PARAMETERS;
     struct OD_MATRIX OD_MATRIX;
@@ -114,9 +110,9 @@ void simulate_example(const char* arquivoEDGES,const char* arquivoOD){
     init_parameters(&BPR_PARAMETERS,&edges,arquivoEDGES);
 
     load_OD_from_file(arquivoOD, &OD_MATRIX);
-    print_OD_matrix(&OD_MATRIX);
+    //print_OD_matrix(&OD_MATRIX);
     igraph_vector_t solucao;
-    init_simulate(&BPR_PARAMETERS,&OD_MATRIX,&solucao,&edges);
+    init_simulate(&BPR_PARAMETERS,&OD_MATRIX,&solucao,&edges,algoritmo);
 }
 
 void simulate_percolation(const char* arquivoEDGES,const char* arquivoOD,int K,int seed){

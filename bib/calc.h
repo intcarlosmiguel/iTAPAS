@@ -4,6 +4,70 @@
 #include "igraph.h"
 #include <ctype.h>
 
+void print_vector_igraph(igraph_vector_int_t* vetor){
+    int N =igraph_vector_int_size(vetor);
+    for (int i = 0; i < N; i++){
+        if(i != N - 1) printf("%ld,",VECTOR(*vetor)[i]);
+        else printf("%ld\n",VECTOR(*vetor)[i]);
+    }
+    
+}
+
+void BPR(igraph_vector_t* tempo,struct PARAMETERS* BPR_PARAMETERS,igraph_vector_t* fluxo){
+    double s;
+    for (int i = 0; i < BPR_PARAMETERS->L; i++){
+        s = pow(VECTOR(*fluxo)[i]/VECTOR(BPR_PARAMETERS->capacidade)[i],BETA);
+        VECTOR(*tempo)[i] = (VECTOR(BPR_PARAMETERS->cost_time)[i])*(1 + ALPHA*s);
+    }
+}
+
+double single_BPR(double fluxo,double free_flow_time,double capacidade){
+    double s = pow(fluxo/capacidade,BETA);
+    if(isnan(s)) {
+        printf("Warning: NaN detected in single_BPR\n");
+        exit(0);
+        s = 0.0;
+    }
+    return free_flow_time * (1 + ALPHA * s);
+}
+
+double single_BPR_derivate(double fluxo,double free_flow_time,double capacidade){
+    double s = pow(fluxo/capacidade,BETA-1);
+    if(isnan(s)) {
+        printf("Warning: NaN detected in single_BPR_derivate\n");
+        exit(0);
+        s = 0.0;
+    }
+    return free_flow_time * ALPHA * BETA * s / capacidade;
+}
+
+void BPR_derivate(igraph_vector_t* derivate,struct PARAMETERS* BPR_PARAMETERS,igraph_vector_t* fluxo){
+    double s;
+    for (int i = 0; i < BPR_PARAMETERS->L; i++){
+        s = pow(VECTOR(*fluxo)[i]/VECTOR(BPR_PARAMETERS->capacidade)[i],BETA-1);
+        if(isnan(s)) {
+            printf("Warning: NaN detected in BPR_derivate\n");
+            exit(0);
+            s = 0.0;
+        }
+        VECTOR(*derivate)[i] = (VECTOR(BPR_PARAMETERS->cost_time)[i])*ALPHA*BETA*s/ VECTOR(BPR_PARAMETERS->capacidade)[i];
+    }
+}
+
+void BPR_gradient(igraph_vector_t* gradiente,struct PARAMETERS* BPR_PARAMETERS,igraph_vector_t* fluxo,double *total_time){
+    double s;
+    if (total_time != NULL) *total_time = 0;
+    for (int i = 0; i < BPR_PARAMETERS->L; i++){
+        s = pow(VECTOR(*fluxo)[i]/VECTOR(BPR_PARAMETERS->capacidade)[i],BETA);
+        if(isnan(s)) {
+            printf("Warning: NaN detected in BPR_derivate\n");
+            exit(0);
+            s = 0.0;
+        }
+        if (total_time != NULL) *total_time += (VECTOR(BPR_PARAMETERS->cost_time)[i] * VECTOR(*fluxo)[i]) * (1.0 + 0.03 * s);
+        VECTOR(*gradiente)[i] = (VECTOR(BPR_PARAMETERS->cost_time)[i])*(1 + ALPHA*(1+BETA)*s);
+    }
+}
 
 void load_OD_from_file(const char* filename, struct OD_MATRIX* OD_MATRIX) {
     FILE* file = fopen(filename, "r");
@@ -251,4 +315,51 @@ void init_parameters(struct PARAMETERS* BPR_PARAMETERS, igraph_vector_int_t* edg
     }
     fclose(arquivo);
 
+}
+double relative_gap(
+    igraph_vector_t *flow,
+    igraph_t *Grafo,
+    struct PARAMETERS* BPR_PARAMETERS,
+    struct OD_MATRIX* OD
+) {
+
+    double gap = 0.0;
+    double total_cost = 0.0;
+    double total_flow = 0.0;
+    int i,j,alvo,edge_id,fonte,size;
+
+    igraph_vector_t time;
+    igraph_vector_init(&time, BPR_PARAMETERS->L);
+    BPR(&time, BPR_PARAMETERS, flow); // Calcula o tempo de cada aresta
+    for ( i = 0; i < BPR_PARAMETERS->L; i++) total_flow += VECTOR(*flow)[i]*VECTOR(time)[i];
+
+    
+    
+    for( i = 0; i<OD->size; i++) {
+        fonte = OD->Elementos[i].fonte;
+        size = igraph_vector_int_size(&OD->Elementos[i].alvos);
+
+        igraph_vector_int_t inbound;
+        igraph_vector_int_init(&inbound, 0);
+        igraph_get_shortest_paths_dijkstra(
+            Grafo, NULL,NULL,fonte,igraph_vss_all(),&time, IGRAPH_OUT,NULL,&inbound
+        );
+
+        for (j = 0; j < size; j++) {
+            alvo = VECTOR(OD->Elementos[i].alvos)[j];
+            while(alvo != fonte) {
+                edge_id = VECTOR(inbound)[alvo];
+                total_cost += VECTOR(time)[edge_id] * VECTOR(OD->Elementos[i].volumes)[j];
+                alvo = IGRAPH_FROM(Grafo, edge_id);
+            }
+        }
+
+        igraph_vector_int_destroy(&inbound);
+    }
+    if (total_flow > 0) gap = 1 - total_cost / total_flow;
+    else gap = 1.0; // Evita divisão por zero, assume que o gap é 1 se não houver fluxo
+    igraph_vector_destroy(&time);
+
+
+    return gap;
 }

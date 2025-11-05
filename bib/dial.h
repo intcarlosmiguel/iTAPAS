@@ -2,10 +2,9 @@
 #pragma once
 
 #include "igraph.h"
-#include "network.h"
 #include "define.h"
 #include <time.h>
-const int MAX_ITER = 500;
+const int MAX_ITER = 5000;
 
 
 void att_topological_order(
@@ -554,9 +553,11 @@ void Dial(
     bool ALL_BUSHES_ARE_OPTIMAL = false;
     //FILE *file = fopen("gap.txt", "w");
     double GAP, previous_GAP = DBL_MAX;
+    clock_t start_time, end_time;
+
     for(int iter = 0; iter < MAX_ITER; iter++) {
-        
-        printf("🔢🔢🔢🔢🔢🔢🔢🔢 Iteração Global %d 🔢🔢🔢🔢🔢🔢🔢🔢\n", iter+1);
+        start_time = clock();
+        //printf("🔢🔢🔢🔢🔢🔢🔢🔢 Iteração Global %d 🔢🔢🔢🔢🔢🔢🔢🔢\n", iter+1);
         ALL_BUSHES_ARE_OPTIMAL = true; // Assume que todas são ótimas nesta iteração
         double max_deltax = 0.;
             
@@ -599,18 +600,19 @@ void Dial(
             
         }
         GAP = relative_gap(solucao, Grafo, BPR_PARAMETERS, OD);
+        end_time = clock();
 
-        printf("Relative Gap na iteração %d: %e ", iter+1, GAP);
-        if(fabs(previous_GAP - GAP)/previous_GAP < 1e-6) {
+        /* if(fabs(previous_GAP - GAP)/previous_GAP < 1e-6) {
             printf(" (Mudança: %e)\n", fabs(previous_GAP - GAP));
             //printf("Convergência alcançada após %d iterações globais.\n", iter+1);
             break;
-        }
-        printf(" (Mudança: %e,%e)\n", fabs(previous_GAP - GAP),fabs(previous_GAP - GAP)/previous_GAP);
-        if(GAP < 1e-4) {
-            //printf("Convergência alcançada após %d iterações globais.\n", iter+1);
-            break;
-        }
+        } */
+        printf("%d %e %e %e\n", iter+1, GAP, fabs(previous_GAP - GAP)/previous_GAP, ((double)(end_time - start_time)) / CLOCKS_PER_SEC);
+        if(GAP < 1e-10) break;
         previous_GAP = GAP;
+    }
+    printf("\n=== Fluxos Finais ===\n");
+    for (int i = 0; i < BPR_PARAMETERS->L; i++) {
+        printf("Arco (%ld, %ld): %10.2f\n", IGRAPH_FROM(Grafo,i), IGRAPH_TO(Grafo,i), VECTOR(*solucao)[i]);
     }
 }
