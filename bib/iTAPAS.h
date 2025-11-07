@@ -14,9 +14,70 @@ struct PAS {
     int origem;                   /* Nó de origem do PAS */
 };
 
+bool vetores_sao_iguais(const igraph_vector_int_t* v1, const igraph_vector_int_t* v2) {
+    // Passo 1: Compara os tamanhos. É a verificação mais rápida.
+    int tamanho = igraph_vector_int_size(v1);
+    if (tamanho != igraph_vector_int_size(v2)) {
+        return false;
+    }
+
+    // Passo 2: Se os vetores estiverem vazios, eles são iguais.
+    if (tamanho == 0) {
+        return true;
+    }
+
+    // Passo 3: Compara os blocos de memória contíguos.
+    // &VECTOR(*v1)[0] obtém um ponteiro para o início dos dados de v1.
+    // &VECTOR(*v2)[0] obtém um ponteiro para o início dos dados de v2.
+    // Esta é a maneira correta e eficiente de fazer a comparação.
+    if (memcmp(&VECTOR(*v1)[0], &VECTOR(*v2)[0], tamanho * sizeof(int)) != 0) {
+        return false;
+    }
+    
+    return true;
+}
+
+/**
+ * @brief Compara dois PAS para verificar se são topologicamente idênticos.
+ * 
+ * A comparação é canônica, ou seja, a ordem dos segmentos (c1 vs c2) não importa.
+ * 
+ * @param pas1 O primeiro PAS.
+ * @param pas2 O segundo PAS.
+ * @return true se os PAS forem idênticos, false caso contrário.
+ */
+bool pas_sao_iguais(const struct PAS* pas1, const struct PAS* pas2) {
+    // Caso 1: Compara c1 com c1 e c2 com c2.
+    if (vetores_sao_iguais(&pas1->c1, &pas2->c1) && vetores_sao_iguais(&pas1->c2, &pas2->c2)) {
+        return true;
+    }
+
+    // Caso 2: Compara c1 com c2 e c2 com c1 (a permutação).
+    if (vetores_sao_iguais(&pas1->c1, &pas2->c2) && vetores_sao_iguais(&pas1->c2, &pas2->c1)) {
+        return true;
+    }
+
+    return false;
+}
+
 /* ========================================================================
    FUNÇÕES AUXILIARES PARA MANIPULAÇÃO DE PAS
    ======================================================================== */
+
+/* void add_pas(struct PAS **vec, int *tamanho, igraph_vector_int_t c1, igraph_vector_int_t c2, int origem) {
+    struct PAS *tmp = (struct PAS*) realloc(*vec, (*tamanho + 1) * sizeof(struct PAS));
+    if (!tmp) {
+        perror("Erro ao alocar memória para novo PAS");
+        exit(EXIT_FAILURE);
+    }
+    *vec = tmp;
+    igraph_vector_int_init(&(*vec)[*tamanho].c1, 0);
+    igraph_vector_int_init(&(*vec)[*tamanho].c2, 0);
+    igraph_vector_int_copy(&(*vec)[*tamanho].c1, &c1);
+    igraph_vector_int_copy(&(*vec)[*tamanho].c2, &c2);
+    (*vec)[*tamanho].origem = origem;
+    (*tamanho)++;
+} */
 
 void pas_print(const struct PAS *pas, igraph_t *Grafo) {
     if (!pas) return;
@@ -122,6 +183,9 @@ double deslocar_fluxo_no_pas(igraph_t *Grafo,
                             origem_attr, &tempo_c2, &derivada_c2, &capacidade_c2);
     
     double denominador = derivada_c1 + derivada_c2;
+    if(fabs(tempo_c2 - tempo_c1) < TAPAS_EPSILON || fabs(denominador) < TAPAS_EPSILON) {
+        return 0.0;
+    }
     double delta_fluxo = (tempo_c2 - tempo_c1) / denominador;
     
     if (fabs(delta_fluxo) <= TAPAS_EPSILON) {
@@ -255,7 +319,23 @@ void identificar_pas_fluxo_maximo(igraph_t *Grafo,
                 melhor_arco = arco;
             }
         }
-        
+        if(maior_fluxo < TAPAS_EPSILON){
+            //printf("Erro: Nenhum arco com fluxo suficiente encontrado para o nó %d ao construir c2 do PAS.\n", no_atual);
+            igraph_vector_int_clear(&pas->c2);
+            igraph_vector_int_clear(&pas->c1);
+            igraph_vector_int_destroy(&arcos_entrantes);
+            free(visitado);
+            break; 
+        }
+        /* Evita adicionar arcos já presentes em c2 (prevenção de loop) */
+        if (igraph_vector_int_contains(&pas->c2, melhor_arco)) {
+            //printf("Erro: Arco %d já presente em c2; interrompendo construção de c2 para evitar ciclo.\n", melhor_arco);
+            igraph_vector_int_clear(&pas->c2);
+            igraph_vector_int_clear(&pas->c1);
+            igraph_vector_int_destroy(&arcos_entrantes);
+            free(visitado);
+            break; 
+        }
         if (melhor_arco == -1) break;
         
         igraph_vector_int_push_back(&pas->c2, melhor_arco);
@@ -263,18 +343,20 @@ void identificar_pas_fluxo_maximo(igraph_t *Grafo,
         
         if (no_atual == fonte) break;
     }
-    
     /* Remove elementos de c1 que estão após o ponto de encontro */
-    while (no_atual != fonte) {
-        int arco = VECTOR(*antecessores)[no_atual];
-        if (arco == -1) break;
+    if(igraph_vector_int_size(&pas->c2) != 0) {
         
-        igraph_vector_int_pop_back(&pas->c1);
-        no_atual = IGRAPH_FROM(Grafo, arco);
+        while (no_atual != fonte) {
+            int arco = VECTOR(*antecessores)[no_atual];
+            if (arco == -1) break;
+            
+            igraph_vector_int_pop_back(&pas->c1);
+            no_atual = IGRAPH_FROM(Grafo, arco);
+        }
+        
+        igraph_vector_int_destroy(&arcos_entrantes);
+        free(visitado);
     }
-    
-    igraph_vector_int_destroy(&arcos_entrantes);
-    free(visitado);
 }
 
 /* ========================================================================
@@ -302,9 +384,7 @@ void processar_origem(struct PARAMETERS *BPR_PARAMETERS,
     
     /* Calcula tempos de viagem e caminho mais curto */
     BPR(&tempo_arcos, BPR_PARAMETERS, solucao);
-    igraph_get_shortest_paths_dijkstra(Grafo, NULL, NULL, fonte, igraph_vss_all(),
-                                       &tempo_arcos, IGRAPH_OUT, NULL, &antecessores);
-    
+    igraph_get_shortest_paths_dijkstra(Grafo, NULL, NULL, fonte, igraph_vss_all(),&tempo_arcos, IGRAPH_OUT, NULL, &antecessores);
     /* Calcula custos mínimos de cada nó até a fonte */
     for (int no = 0; no < BPR_PARAMETERS->N; no++) {
         VECTOR(custo_nos)[no] = 0.0;
@@ -319,9 +399,12 @@ void processar_origem(struct PARAMETERS *BPR_PARAMETERS,
         }
     }
     
+    
     /* Identifica arcos com custo reduzido positivo e fluxo positivo */
     for (int arco = 0; arco < BPR_PARAMETERS->L; arco++) {
         double fluxo = EAN(Grafo, origem_attr, arco);
+        int from = IGRAPH_FROM(Grafo, arco);
+        int to = IGRAPH_TO(Grafo, arco);
         if (fluxo <= TAPAS_EPSILON) continue;
         
         int no_origem = IGRAPH_FROM(Grafo, arco);
@@ -335,34 +418,54 @@ void processar_origem(struct PARAMETERS *BPR_PARAMETERS,
             igraph_vector_int_push_back(&arcos_removidos, arco);
         }
     }
+    //printf("Caminhos mínimos calculados para a origem %d.\n", fonte);
     
     /* Processa cada arco candidato à remoção */
     int num_candidatos = igraph_vector_int_size(&arcos_removidos);
     for (int i = 0; i < num_candidatos; i++) {
+        //printf("  Processando arco %d/%d para remoção...\n", i + 1, num_candidatos);
         struct PAS novo_pas;
         int arco = VECTOR(arcos_removidos)[i];
         
+        //printf("    PAS identificado entre os nós %ld e %ld.\n", IGRAPH_FROM(Grafo, arco), IGRAPH_TO(Grafo, arco));
         identificar_pas_fluxo_maximo(Grafo, arco, fonte, &antecessores, &novo_pas);
+        //pas_print(&novo_pas, Grafo);
+        if( igraph_vector_int_size(&novo_pas.c1) == 0 || 
+            igraph_vector_int_size(&novo_pas.c2) == 0) {
+            pas_free(&novo_pas);
+            //printf("    PAS inválido (caminho vazio). Pulando...\n");
+            continue;
+        }
         double deslocamento = deslocar_fluxo_no_pas(Grafo, BPR_PARAMETERS, &novo_pas, 
                                                      *solucao, fonte);
-        
+        //printf("    Deslocamento de fluxo no PAS: %.6f\n", deslocamento);
         if (fabs(deslocamento) < TAPAS_EPSILON) {
             pas_free(&novo_pas);
             continue;
         }
-        
-        /* Adiciona novo PAS ao conjunto */
-        struct PAS *tmp = (struct PAS*) realloc(*conjunto_pas, 
-                                                 (*num_pas + 1) * sizeof(struct PAS));
-        if (tmp == NULL) {
-            pas_free(&novo_pas);
-            perror("Falha ao alocar memória para novo PAS");
-            exit(EXIT_FAILURE);
+        bool pas_duplicado = false;
+        for (int j = 0; j < *num_pas; j++) {
+            // Usa a nova função de comparação, que é logicamente correta.
+            if (pas_sao_iguais(&novo_pas, &(*conjunto_pas)[j])) {
+                pas_duplicado = true;
+                break; // Encontrou duplicata, não precisa procurar mais.
+            }
         }
-        
-        *conjunto_pas = tmp;
-        (*conjunto_pas)[*num_pas] = novo_pas;
-        (*num_pas)++;
+        if(!pas_duplicado){
+            /* Adiciona novo PAS ao conjunto */
+            struct PAS *tmp = (struct PAS*) realloc(*conjunto_pas, 
+                                                    (*num_pas + 1) * sizeof(struct PAS));
+            if (tmp == NULL) {
+                pas_free(&novo_pas);
+                perror("Falha ao alocar memória para novo PAS");
+                exit(EXIT_FAILURE);
+            }
+            
+            *conjunto_pas = tmp;
+            (*conjunto_pas)[*num_pas] = novo_pas;
+            (*num_pas)++;
+        }
+        else pas_free(&novo_pas);
     }
     
     igraph_vector_destroy(&tempo_arcos);
@@ -429,42 +532,53 @@ void iTAPAS(struct PARAMETERS *BPR_PARAMETERS,
             struct OD_MATRIX *OD,
             igraph_t *Grafo,
             igraph_vector_t *solucao) {
+        
     igraph_t grafo_bush;
     igraph_copy(&grafo_bush, Grafo);
     
     igraph_vector_init(solucao, BPR_PARAMETERS->L);
-    
     struct PAS *conjunto_pas = NULL;
     int num_pas = 0;
     
     /* Fase 1: Atribuição inicial (all-or-nothing) */
+
+    int valor = count_files_in_dir("./output/iTAPAS");
+    char filename[10000];
+    sprintf(filename, "./output/iTAPAS/gap_progression_%d.txt", valor + 1);
+    FILE* gap_file = fopen(filename, "w");
+
     printf("=== Atribuição Inicial ===\n");
     for (int i = 0; i < OD->size; i++) {
         atribuicao_inicial(BPR_PARAMETERS, OD, &grafo_bush, i, solucao);
     }
-    
+    clock_t start_time, end_time;
+    double previous_gap = DBL_MAX ,tempo;
     /* Fase 2: Iterações de equilíbrio */
-    printf("\n=== Iterações de Equilíbrio ===\n");
+    //printf("\n=== Iterações de Equilíbrio ===\n");
     for (int iteracao = 0; iteracao < ITAPAS_MAX_ITER; iteracao++) {
         /* Processa cada origem */
+        start_time = clock();
+        //printf("\n--- Iteração %d ---\n", BPR_PARAMETERS->L);
         for (int o = 0; o < OD->size; o++) {
-            processar_origem(BPR_PARAMETERS, OD, &grafo_bush, o, solucao, 
-                           &conjunto_pas, &num_pas);
+            //printf("Processando origem %d\n", OD->Elementos[o].fonte);
+            processar_origem(BPR_PARAMETERS, OD, &grafo_bush, o, solucao, &conjunto_pas, &num_pas);
         }
-        
+        //printf("Número de PAS após processamento das origens: %d\n", num_pas);
         /* Deslocamento global de fluxo */
         deslocamento_global_pas(BPR_PARAMETERS, OD, &grafo_bush, 
                                conjunto_pas, &num_pas, solucao);
         
         /* Calcula e verifica critério de convergência */
         double gap = relative_gap(solucao, &grafo_bush, BPR_PARAMETERS, OD);
-        printf("Iteração %3d | GAP: %.6e | PAS ativos: %d\n", 
-               iteracao + 1, gap, num_pas);
-        
+        printf("Iteração %3d | GAP: %.6e | PAS ativos: %d\n",        iteracao + 1, gap, num_pas);
+        end_time = clock();
+        tempo = (double)(end_time - start_time) / CLOCKS_PER_SEC;
+        fprintf(gap_file, "%d %e %f %f\n", iteracao + 1, gap,fabs(previous_gap - gap)/previous_gap, tempo);
         if (gap < 1e-10) {
             printf("\nConvergência alcançada!\n");
             break;
         }
+        previous_gap = gap;
     }
     
     /* Libera memória do conjunto de PAS */
@@ -474,12 +588,13 @@ void iTAPAS(struct PARAMETERS *BPR_PARAMETERS,
     free(conjunto_pas);
     
     /* Imprime solução final */
-    printf("\n=== Fluxos Finais ===\n");
+    /* printf("\n=== Fluxos Finais ===\n");
     for (int i = 0; i < BPR_PARAMETERS->L; i++) {
         if (VECTOR(*solucao)[i] > TAPAS_EPSILON) {
             printf("Arco %4d: %10.2f\n", i, VECTOR(*solucao)[i]);
         }
-    }
+    } */
+    fclose(gap_file);
     
     igraph_destroy(&grafo_bush);
 }

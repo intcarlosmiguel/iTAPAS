@@ -4,6 +4,63 @@
 #include "igraph.h"
 #include <ctype.h>
 
+
+#include <dirent.h>
+#include <sys/stat.h>
+#include <limits.h>
+#include <string.h>
+#include <stdio.h>
+#include <errno.h>
+#include <linux/limits.h>
+
+/* Conta quantos arquivos regulares existem dentro da pasta 'path'.
+ * Retorna o número de arquivos (>=0) em caso de sucesso, ou -1 em erro
+ * (errno é preservado conforme opendir/stat).
+ */
+int count_files_in_dir(const char *path) {
+    DIR *d = opendir(path);
+    if (!d){
+        printf("Erro ao abrir o diretório '%s': %s\n", path, strerror(errno));
+        exit(1);
+        return -1;
+    }
+
+    struct dirent *entry;
+    struct stat st;
+    char fullpath[PATH_MAX];
+    int count = 0;
+
+    while ((entry = readdir(d)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
+
+#if defined(DT_REG)
+        if (entry->d_type == DT_REG) {
+            count++;
+            continue;
+        }
+#endif
+
+        /* Se o tipo não for informado (DT_UNKNOWN) ou DT_REG não estiver disponível,
+           usamos stat para determinar se é um arquivo regular. */
+        if (snprintf(fullpath, PATH_MAX, "%s/%s", path, entry->d_name) >= PATH_MAX) {
+            /* caminho muito longo: considera erro */
+            closedir(d);
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+
+        if (stat(fullpath, &st) == 0) {
+            if (S_ISREG(st.st_mode)) count++;
+        } else {
+            /* ignora entradas que não puderam ser 'stat'-adas */
+            continue;
+        }
+    }
+
+    closedir(d);
+    return count;
+}
+
 void print_vector_igraph(igraph_vector_int_t* vetor){
     int N =igraph_vector_int_size(vetor);
     for (int i = 0; i < N; i++){

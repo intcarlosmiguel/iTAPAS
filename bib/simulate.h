@@ -60,17 +60,16 @@ void init_simulate(struct PARAMETERS* BPR_PARAMETERS,struct OD_MATRIX *OD,igraph
     igraph_empty(&Grafo, BPR_PARAMETERS->N, IGRAPH_DIRECTED);
     igraph_add_edges(&Grafo, edges, NULL);
     if (strcmp(algoritmo, "Leblanc") == 0) {
-        printf("Using Leblanc's algorithm for shortest paths.\n");
+        //printf("Using Leblanc's algorithm for shortest paths.\n");
         leblanc(BPR_PARAMETERS, OD, &Grafo, solucao);
     } else if (strcmp(algoritmo, "Dial") == 0) {
         struct BUSH* bushes;
-        printf("Using Dial's algorithm for shortest paths.\n");
+        //printf("Using Dial's algorithm for shortest paths.\n");
         Dial(&Grafo, OD, BPR_PARAMETERS, solucao, &bushes, false);
         for (int i = 0; i < OD->size; i++) free_bush(&bushes[i]);
         free(bushes);
     } else if (strcmp(algoritmo, "iTAPAS") == 0) {
-        struct BUSH* bushes;
-        printf("Using iTAPAS's algorithm for shortest paths.\n");
+        //printf("Using iTAPAS's algorithm for shortest paths.\n");
         iTAPAS(BPR_PARAMETERS, OD, &Grafo, solucao);
     } else {
         printf("Error: Unknown algorithm '%s'\n", algoritmo);

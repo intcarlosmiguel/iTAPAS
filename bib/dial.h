@@ -554,7 +554,10 @@ void Dial(
     //FILE *file = fopen("gap.txt", "w");
     double GAP, previous_GAP = DBL_MAX;
     clock_t start_time, end_time;
-
+    int valor = count_files_in_dir("./output/dial");
+    char filename[10000];
+    sprintf(filename, "./output/dial/gap_progression_%d.txt", valor + 1);
+    FILE* gap_file = fopen(filename, "w");
     for(int iter = 0; iter < MAX_ITER; iter++) {
         start_time = clock();
         //printf("🔢🔢🔢🔢🔢🔢🔢🔢 Iteração Global %d 🔢🔢🔢🔢🔢🔢🔢🔢\n", iter+1);
@@ -607,12 +610,13 @@ void Dial(
             //printf("Convergência alcançada após %d iterações globais.\n", iter+1);
             break;
         } */
-        printf("%d %e %e %e\n", iter+1, GAP, fabs(previous_GAP - GAP)/previous_GAP, ((double)(end_time - start_time)) / CLOCKS_PER_SEC);
+        fprintf(gap_file, "%d %e %e %e\n", iter+1, GAP, fabs(previous_GAP - GAP)/previous_GAP, ((double)(end_time - start_time)) / CLOCKS_PER_SEC);
         if(GAP < 1e-10) break;
         previous_GAP = GAP;
     }
-    printf("\n=== Fluxos Finais ===\n");
+    /* printf("\n=== Fluxos Finais ===\n");
     for (int i = 0; i < BPR_PARAMETERS->L; i++) {
         printf("Arco (%ld, %ld): %10.2f\n", IGRAPH_FROM(Grafo,i), IGRAPH_TO(Grafo,i), VECTOR(*solucao)[i]);
-    }
+    } */
+    fclose(gap_file);
 }
