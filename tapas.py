@@ -20,8 +20,9 @@ from collections import defaultdict
 
 BPR_ALPHA = 0.15
 BPR_BETA = 4.0
-TOLERANCIA_FLUXO = 1e-6
+TOLERANCIA_FLUXO = 1e-9
 TOLERANCIA_CUSTO = 1e-9
+MAX_ITERACOES = 100
 
 
 # =============================================================================
@@ -32,23 +33,24 @@ def executar_itapas(arquivo_rede: str, arquivo_viagens: str, max_iter: int, gap_
     """Função principal que orquestra a execução do algoritmo iTAPAS."""
     grafo = carregar_rede(arquivo_rede)
     viagens = carregar_viagens(arquivo_viagens)
-    origens = list(set(o for o, d in viagens.keys()))
+    origens = []
+    for (o,d) in viagens.keys():
+        if o not in origens:
+            origens.append(o)
     #origens = [34219,26251,3140]
     conjunto_pas = []
     grafo = atribuicao_inicial(grafo, viagens)
-    
-    for i in range(max_iter):
+
+    for i in range(MAX_ITERACOES):
         for origem in origens:
-            #print(f"\nProcessando origem {origem} | Iteração {i+1}")
             grafo, conjunto_pas = processar_origem(grafo, origem, conjunto_pas)
         grafo, conjunto_pas = deslocamento_global_pas(grafo, conjunto_pas)
-        
         gap = calcular_gap_relativo(grafo, viagens, origens)
         print(f"Gap Relativo: {gap:.8e} | Iteração: {i+1} | PAS ativos: {len(conjunto_pas)}")
         if gap < gap_convergencia:
             print("Convergência atingida!")
             break
-    
+
     print("\nAlocação finalizada.")
     return grafo
 
@@ -133,20 +135,24 @@ def processar_origem(grafo: nx.DiGraph, origem: int, conjunto_pas: list) -> (nx.
     arcos_desequilibrados,ids = identificar_arcos_desequilibrados(grafo, origem, custos_spt)
     #print(origem)
     #print(arcos_desequilibrados)
-    removed = False
+    # Ordena arcos_desequilibrados pela primeira coluna e depois pela segunda.
+    # Reordena também `ids` para manter o paralelismo entre as listas.
+    if arcos_desequilibrados:
+        # Parear arcos com seus ids e ordenar: ascendente por u, descendente por v
+        pareados = list(zip(arcos_desequilibrados, ids))
+        pareados.sort(key=lambda item: (item[0][0], -item[0][1]))
+        arcos_desequilibrados, ids = zip(*pareados)
+        arcos_desequilibrados = list(arcos_desequilibrados)
+        ids = list(ids)
     while arcos_desequilibrados:
         u, v = arcos_desequilibrados.pop(0)
-        histo_index = ids.pop(0)
         pas = identificar_pas_fluxo_maximo(grafo, u, v, origem, preds)
         if not pas: 
             continue
         
         fluxo_deslocado, grafo = deslocar_fluxo_no_pas(grafo, pas)
-        ##print(f"Origem {origem} | Arco desequilibrado ({u}->{v}) | Fluxo deslocado: {fluxo_deslocado:.6f}")
         if fluxo_deslocado > TOLERANCIA_FLUXO:
-            conjunto_pas = adicionar_pas_ao_conjunto(conjunto_pas, pas)
-        if(removed):
-            exit(0)
+            conjunto_pas,entrou = adicionar_pas_ao_conjunto(conjunto_pas, pas)
     return grafo, conjunto_pas
 
 
@@ -187,7 +193,6 @@ def identificar_pas_fluxo_maximo(grafo: nx.DiGraph, u_deseq: int, v_deseq: int, 
     while no_atual not in conjunto_nos_s1:
         predecessores = list(grafo.predecessors(no_atual))
         if not predecessores: 
-            #print("Erro: Sem predecessores para nó ", no_atual)
             return None
 
         melhor_pred = max(
@@ -197,10 +202,8 @@ def identificar_pas_fluxo_maximo(grafo: nx.DiGraph, u_deseq: int, v_deseq: int, 
         )
         
         if melhor_pred is None or grafo[melhor_pred][no_atual]['fluxos_por_origem'][origem] < TOLERANCIA_FLUXO:
-            #print("Erro: Sem fluxo suficiente para retroceder do nó ", no_atual)
             return None
         if melhor_pred in nos_visitados_s2:
-            #print("Erro: Ciclo detectado ao retroceder do nó ", no_atual)
             return None
 
         caminho_retroativo_s2.insert(0, (melhor_pred, no_atual))
@@ -211,8 +214,6 @@ def identificar_pas_fluxo_maximo(grafo: nx.DiGraph, u_deseq: int, v_deseq: int, 
     
     idx_inicio_s1 = nos_caminho_s1.index(cauda)
     s1 = [(nos_caminho_s1[i], nos_caminho_s1[i+1]) for i in range(idx_inicio_s1, len(nos_caminho_s1)-1)]
-    #print("S1:")
-    #print(s1)
     s2 = caminho_retroativo_s2 + [(u_deseq, v_deseq)]
     
     return {'s1': s1, 's2': s2, 'origem': origem, 'cabeca': cabeca, 'cauda': cauda}
@@ -225,7 +226,6 @@ def deslocar_fluxo_no_pas(grafo: nx.DiGraph, pas: dict) -> (float, nx.DiGraph): 
     # CORREÇÃO: Acessando a chave 'custo'
     custo_s1 = sum(grafo[u][v]['custo'] for u, v in s1)
     custo_s2 = sum(grafo[u][v]['custo'] for u, v in s2)
-    #print(custo_s1,custo_s2)
     if custo_s1 > custo_s2:
         s1, s2, custo_s1, custo_s2 = s2, s1, custo_s2, custo_s1
 
@@ -256,12 +256,10 @@ def deslocar_fluxo_no_pas(grafo: nx.DiGraph, pas: dict) -> (float, nx.DiGraph): 
         return 0.0, grafo
 
     for u, v in s1:
-        #print("s1", u,v, grafo[u][v]['fluxo'], grafo[u][v]['fluxos_por_origem'][origem])
         grafo[u][v]['fluxo'] += delta
         grafo[u][v]['fluxos_por_origem'][origem] += delta
         atualizar_custo_arco(grafo, u, v)
     for u, v in s2:
-        #print("s2", u,v, grafo[u][v]['fluxo'], grafo[u][v]['fluxos_por_origem'][origem])
         grafo[u][v]['fluxo'] -= delta
         grafo[u][v]['fluxos_por_origem'][origem] -= delta
         atualizar_custo_arco(grafo, u, v)
@@ -269,21 +267,19 @@ def deslocar_fluxo_no_pas(grafo: nx.DiGraph, pas: dict) -> (float, nx.DiGraph): 
     return delta, grafo
 
 
-def adicionar_pas_ao_conjunto(conjunto_pas: list, novo_pas: dict) -> list:
+def adicionar_pas_ao_conjunto(conjunto_pas: list, novo_pas: dict) ->  (list,bool): # type: ignore
     """Adiciona um novo PAS ao conjunto global, evitando duplicatas topológicas."""
     sig_s1 = tuple(sorted(novo_pas['s1']))
     sig_s2 = tuple(sorted(novo_pas['s2']))
     nova_assinatura = tuple(sorted((sig_s1, sig_s2)))
-    
     for pas_existente in conjunto_pas:
         ex_sig_s1 = tuple(sorted(pas_existente['s1']))
         ex_sig_s2 = tuple(sorted(pas_existente['s2']))
         assinatura_existente = tuple(sorted((ex_sig_s1, ex_sig_s2)))
         if nova_assinatura == assinatura_existente:
-            #print("PAS duplicado detectado. Pulando adição ao conjunto.")
-            return conjunto_pas
+            return conjunto_pas,False
     
-    return conjunto_pas + [novo_pas]
+    return conjunto_pas + [novo_pas],True
 
 
 # =============================================================================
@@ -305,7 +301,7 @@ def deslocamento_global_pas(grafo: nx.DiGraph, conjunto_pas: list, num_deslocame
             if fluxo_min_s2 < TOLERANCIA_FLUXO:
                 pas_a_remover.append(pas)
             else:
-                _, grafo = deslocar_fluxo_no_pas(grafo, pas)
+                dx, grafo = deslocar_fluxo_no_pas(grafo, pas)
         
         if pas_a_remover:
             pas_ativos = [p for p in pas_ativos if p not in pas_a_remover]
@@ -321,7 +317,8 @@ def calcular_gap_relativo(grafo: nx.DiGraph, viagens: dict, origens: list) -> fl
     """Calcula o 'Relative Gap', a métrica de convergência padrão."""
     # CORREÇÃO: Usando as chaves corretas
     tempo_total_viagem = sum(d['fluxo'] * d['custo'] for _, _, d in grafo.edges(data=True))
-    if abs(tempo_total_viagem) < TOLERANCIA_FLUXO: return 0.0
+    if abs(tempo_total_viagem) < TOLERANCIA_FLUXO: 
+        return 0.0
     
     tempo_viagem_spt = 0
     for origem in origens:
@@ -351,7 +348,7 @@ if __name__ == '__main__':
     )
 
     # Imprime os resultados finais
-    print("\n--- Resultados Finais ---")
+    """ print("\n--- Resultados Finais ---")
     print("Fluxo e Custo por Arco:")
     for u, v, dados in sorted(grafo_final.edges(data=True)):
-        print(f"Arco ({u}->{v}): Fluxo = {dados['fluxo']:.2f}, Custo = {dados['custo']:.2f}")
+        print(f"Arco ({u}->{v}): Fluxo = {dados['fluxo']:.2f}, Custo = {dados['custo']:.2f}") """
