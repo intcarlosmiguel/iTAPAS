@@ -5,6 +5,8 @@
         "variant": "c",
         "define.h": "c",
         "igraph.h": "c",
-        "ctype.h": "c"
+        "ctype.h": "c",
+        "numbers": "c",
+        "functional": "c"
     }
 }

@@ -1,10 +1,10 @@
 import numpy as np
 import os
 
-Volume = 300
-N_ODS = 10
+Volume = 1000
+N_ODS = 100
 # gera N_ODS volumes distintos (positivos) que somam Volume
-data = np.loadtxt("./fortaleza/edges.txt")[:,:2].astype(int)
+data = np.loadtxt("./fortaleza/edges_fortaleza.txt")[:,:2].astype(int)
 N = np.max(data)
 rng = np.random.default_rng()
 
@@ -46,8 +46,10 @@ def gerar_pares_od(n_pairs, n_nodes, rng):
     return list(pairs)
 
 for i in range(100):
+    print(f"Gerando arquivo OD_{i}.txt...")
     np.random.seed(i+42)
     od_volumes = np.array(gerar_volumes_distintos(Volume, N_ODS))
+    od_volumes = np.ones(len(od_volumes))
     od_pairs = np.array(gerar_pares_od(N_ODS, N, rng))
     output = "./od_outputs"
     os.makedirs(output, exist_ok=True)

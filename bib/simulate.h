@@ -1,15 +1,18 @@
 #pragma once
-#include "igraph.h"
-#include "define.h"
 #include "calc.h"
-#include "mtwister.h"
+#include "define.h"
+#include "cfw.h"
 #include "dial.h"
-#include "leblanc.h"
+#include "greedy_path.h"
 #include "iTAPAS.h"
+#include "leblanc.h"
+#include "mtwister.h"
+#include "percolation.h"
+#include <igraph/igraph.h>
 
-#include <sys/stat.h>
 #include <errno.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #ifdef _WIN32
 #include <direct.h>
@@ -18,218 +21,185 @@
 #define mkdir_dir(path) mkdir(path, 0755)
 #endif
 
-void check_or_create_dir(const char *path) {
-    struct stat st = {0};
+static inline void check_or_create_dir(const char *path) {
+  struct stat st = {0};
 
-    // Checa se a pasta existe
-    if (stat(path, &st) == -1) {
-        // Pasta não existe, tenta criar
-        if (mkdir_dir(path) == 0) {
-            printf("Diretório '%s' criado com sucesso.\n", path);
-        }
+  // Checa se a pasta existe
+  if (stat(path, &st) == -1) {
+    // Pasta não existe, tenta criar
+    if (mkdir_dir(path) == 0) {
+      printf("Diretório '%s' criado com sucesso.\n", path);
     }
+  }
 }
 
-void init_time(double* initial_time, struct PARAMETERS BPR_PARAMETERS, struct OD_MATRIX* OD_MATRIX, igraph_t* Grafo){
-    igraph_vector_t time;
-    igraph_vector_t free_flow;
-    igraph_vector_init(&time, BPR_PARAMETERS.L);
-    igraph_vector_init(&free_flow, BPR_PARAMETERS.L);
-    igraph_vector_update(&free_flow, &BPR_PARAMETERS.capacidade);
-    BPR(&time, &BPR_PARAMETERS, &free_flow);
-    int index = 0;
-    for(int i = 0; i < OD_MATRIX->size; i++){
-        int fonte = OD_MATRIX->Elementos[i].fonte;
-        igraph_matrix_t res;
-        igraph_matrix_init(&res, 0, 0);
-        igraph_distances(Grafo,&time,&res,igraph_vss_1(fonte), igraph_vss_all(), IGRAPH_OUT);
-        for(int j = 0; j < igraph_vector_int_size(&OD_MATRIX->Elementos[i].alvos); j++){
-            int node = VECTOR(OD_MATRIX->Elementos[i].alvos)[j];
-            initial_time[index] = MATRIX(res,0,node);
-            index++;
-        }
-        igraph_matrix_destroy(&res);
-
+static inline void init_time(double *initial_time,
+                             struct PARAMETERS BPR_PARAMETERS,
+                             struct OD_MATRIX *OD_MATRIX, igraph_t *Grafo) {
+  igraph_vector_t time;
+  igraph_vector_t free_flow;
+  igraph_vector_init(&time, BPR_PARAMETERS.L);
+  igraph_vector_init(&free_flow, BPR_PARAMETERS.L);
+  igraph_vector_update(&free_flow, &BPR_PARAMETERS.capacidade);
+  BPR(&time, &BPR_PARAMETERS, &free_flow);
+  int index = 0;
+  for (int i = 0; i < OD_MATRIX->size; i++) {
+    int fonte = OD_MATRIX->Elementos[i].fonte;
+    igraph_matrix_t res;
+    igraph_matrix_init(&res, 0, 0);
+    igraph_distances(Grafo, &time, &res, igraph_vss_1(fonte), igraph_vss_all(),
+                     IGRAPH_OUT);
+    for (int j = 0; j < igraph_vector_int_size(&OD_MATRIX->Elementos[i].alvos);
+         j++) {
+      int node = VECTOR(OD_MATRIX->Elementos[i].alvos)[j];
+      initial_time[index] = MATRIX(res, 0, node);
+      index++;
     }
-    igraph_vector_destroy(&time);
-    igraph_vector_destroy(&free_flow);
+    igraph_matrix_destroy(&res);
+  }
+  igraph_vector_destroy(&time);
+  igraph_vector_destroy(&free_flow);
 }
 
-void init_simulate(struct PARAMETERS* BPR_PARAMETERS,struct OD_MATRIX *OD,igraph_vector_t *solucao,igraph_vector_int_t * edges,const char* algoritmo){
-    igraph_t Grafo;
-    igraph_empty(&Grafo, BPR_PARAMETERS->N, IGRAPH_DIRECTED);
-    igraph_add_edges(&Grafo, edges, NULL);
-    if (strcmp(algoritmo, "Leblanc") == 0) {
-        //printf("Using Leblanc's algorithm for shortest paths.\n");
-        leblanc(BPR_PARAMETERS, OD, &Grafo, solucao);
-    } else if (strcmp(algoritmo, "Dial") == 0) {
-        struct BUSH* bushes;
-        //printf("Using Dial's algorithm for shortest paths.\n");
-        Dial(&Grafo, OD, BPR_PARAMETERS, solucao, &bushes, false);
-        for (int i = 0; i < OD->size; i++) free_bush(&bushes[i]);
-        free(bushes);
-    } else if (strcmp(algoritmo, "iTAPAS") == 0) {
-        //printf("Using iTAPAS's algorithm for shortest paths.\n");
-        iTAPAS(BPR_PARAMETERS, OD, &Grafo, solucao);
-    } else {
-        printf("Error: Unknown algorithm '%s'\n", algoritmo);
-    }
-    //struct BUSH* bushes;
-    //Dial(&Grafo,OD,BPR_PARAMETERS,solucao,&bushes,false);
+static inline void init_simulate(struct PARAMETERS *BPR_PARAMETERS,
+                                 struct OD_MATRIX *OD, igraph_vector_t *solucao,
+                                 igraph_t *Grafo,
+                                 const char *algoritmo) {
+  if (strcmp(algoritmo, "Leblanc") == 0) {
+    // printf("Using Leblanc's algorithm for shortest paths.\n");
+    leblanc(BPR_PARAMETERS, OD, Grafo, solucao, false, NULL, NULL);
+  } else if (strcmp(algoritmo, "CFW") == 0) {
+    printf("Using CFW algorithm for shortest paths.\n");
+    cfw_solver(BPR_PARAMETERS, OD, Grafo, solucao, false, NULL, NULL);
+    
+  } else if (strcmp(algoritmo, "Dial") == 0) {
 
-    /* for (int i = 0; i < OD->size; i++) {
-        for (int j = 0; j < igraph_vector_int_size(&OD->Elementos[i].alvos); j++) {
-            VECTOR(OD->Elementos[i].volumes)[j] += 100.0;
-            VECTOR(OD->Elementos[i].warm_volumes)[j] = 100.0;
-        }
-    }
-
-    Dial(&Grafo,OD,BPR_PARAMETERS,solucao,&bushes,true);
-
-    FILE* file_flow;
-    file_flow = fopen("./example/flow.txt", "w");
-    for(int i = 0; i < BPR_PARAMETERS->L; i++) fprintf(file_flow, "%f %f\n", VECTOR(*solucao)[i],single_BPR(VECTOR(*solucao)[i], VECTOR(BPR_PARAMETERS->cost_time)[i], VECTOR(BPR_PARAMETERS->capacidade)[i]));
-    fclose(file_flow); */
-    //igraph_vector_print(solucao);
-    //optimize(BPR_PARAMETERS,edge_list,OD,&Grafo,solucao);
-    igraph_destroy(&Grafo);
+    struct BUSH *bushes;
+    printf("Using Dial's algorithm for shortest paths.\n");
+    Dial(Grafo, OD, BPR_PARAMETERS, solucao, &bushes, false, false);
+    for (int i = 0; i < OD->size; i++)
+      free_bush(&bushes[i]);
+    free(bushes);
+    
+  } else if (strcmp(algoritmo, "iTAPAS") == 0) {
+    // printf("Using iTAPAS's algorithm for shortest paths.\n");
+    // iTAPAS(BPR_PARAMETERS, OD, Grafo, solucao);
+  } else {
+    printf("Error: Unknown algorithm '%s'\n", algoritmo);
+  }
 }
 
 
 
+static inline void simulate_simple(const char *arquivoEDGES,
+                                   const char *arquivoOD,
+                                   const char *algoritmo) {
 
-void simulate_example(const char* arquivoEDGES,const char* arquivoOD,const char* algoritmo){
+  struct PARAMETERS BPR_PARAMETERS;
+  struct OD_MATRIX OD_MATRIX;
 
-    struct PARAMETERS BPR_PARAMETERS;
-    struct OD_MATRIX OD_MATRIX;
+  igraph_vector_int_t edges;
+  igraph_vector_int_init(&edges, 0);
+  init_parameters(&BPR_PARAMETERS, &edges, arquivoEDGES);
 
+  load_OD_from_file(arquivoOD, &OD_MATRIX);
 
-    igraph_vector_int_t edges;
-    igraph_vector_int_init(&edges, 0);
-    init_parameters(&BPR_PARAMETERS,&edges,arquivoEDGES);
+  igraph_t Grafo;
+  igraph_empty(&Grafo, BPR_PARAMETERS.N, IGRAPH_DIRECTED);
+  igraph_add_edges(&Grafo, &edges, NULL);
 
-    load_OD_from_file(arquivoOD, &OD_MATRIX);
-    //print_OD_matrix(&OD_MATRIX);
-    igraph_vector_t solucao;
-    init_simulate(&BPR_PARAMETERS,&OD_MATRIX,&solucao,&edges,algoritmo);
+  igraph_vector_t solucao;
+  init_simulate(&BPR_PARAMETERS, &OD_MATRIX, &solucao, &Grafo, algoritmo);
+
+  igraph_destroy(&Grafo);
+  igraph_vector_destroy(&solucao);
+  igraph_vector_int_destroy(&edges);
 }
 
-void simulate_percolation(const char* arquivoEDGES,const char* arquivoOD,int K,int seed){
-    struct PARAMETERS BPR_PARAMETERS;
-    struct OD_MATRIX OD_MATRIX;
-    igraph_vector_int_t edges;
-    igraph_vector_int_init(&edges, 0);
-    init_parameters(&BPR_PARAMETERS,&edges,arquivoEDGES);
-    load_OD_from_file(arquivoOD, &OD_MATRIX);
-    //print_OD_matrix(&OD_MATRIX);
+static inline void simulate_percolation(const char *arquivoEDGES,
+                                        const char *arquivoOD,
+                                        const char *algoritmo) {
 
-    igraph_vector_t solucao;
-    igraph_t Grafo;
-    igraph_empty(&Grafo, BPR_PARAMETERS.N, IGRAPH_DIRECTED);
-    igraph_add_edges(&Grafo, &edges, NULL);
-    double alpha = 0.05;
-    double T = 3.;
-    double* initial_time = malloc(OD_MATRIX.n_elements * sizeof(double));
-    int index = 0;
-    igraph_vector_t result;
-    igraph_vector_init(&result, 0);
-    init_time(initial_time, BPR_PARAMETERS, &OD_MATRIX, &Grafo);
+  struct PARAMETERS BPR_PARAMETERS;
+  struct OD_MATRIX OD_MATRIX;
 
-    int congested = 0;  
-    int i,j,node;
-    double time;
-    FILE *flow_per_alpha;
-    int iter = 0;
-    char filename[50];
-    int soma = 0;
-    check_or_create_dir("./results");
-    char dir[50];
-    sprintf(dir, "./results/%d", K);
-    check_or_create_dir(dir);
-    int fonte;
-    sprintf(filename, "./results/%d/removed_edges_%d.txt", K, iter);
-    FILE *file_removed_edges;
-    file_removed_edges = fopen(filename, "w");
-    double eff = 0;
-    while(true){
-        
-        struct BUSH* bushes;
-        Dial(&Grafo,&OD_MATRIX,&BPR_PARAMETERS,&solucao,&bushes,false);
+  igraph_vector_int_t edges;
+  igraph_vector_int_init(&edges, 0);
+  init_parameters(&BPR_PARAMETERS, &edges, arquivoEDGES);
 
-        congested = 0;
-        index = 0;
-        eff = 0;
-        if(seed == 0){
-            sprintf(filename, "./results/%d/flow_%d.txt", K, iter);
-            flow_per_alpha = fopen(filename, "w");
-            for(i = 0; i <BPR_PARAMETERS.L ; i++) fprintf(flow_per_alpha, "%f %f\n", VECTOR(solucao)[i],single_BPR(VECTOR(solucao)[i], VECTOR(BPR_PARAMETERS.cost_time)[i], VECTOR(BPR_PARAMETERS.capacidade)[i]));
+  load_OD_from_file(arquivoOD, &OD_MATRIX);
+  // print_OD_matrix(&OD_MATRIX);
+  igraph_t Grafo;
+  igraph_empty(&Grafo, BPR_PARAMETERS.N, IGRAPH_DIRECTED);
+  igraph_add_edges(&Grafo, &edges, NULL);
+  PercolationState state;
+  PercolationState prev_state;
+  init_percolation_state(&state, BPR_PARAMETERS.N, BPR_PARAMETERS.L);
+  init_percolation_state(&prev_state, BPR_PARAMETERS.N, BPR_PARAMETERS.L);
+
+  struct BUSH *bushes = NULL;
+  igraph_vector_t solucao;
+  bool warm_start = false;
+  //struct WARM_START WS;
+  //initialize_warm_start(&WS, OD_MATRIX.size);
+
+  // Inbounds salvos da iteração anterior (árvore de caminhos mínimos)
+  igraph_vector_int_t *saved_inbounds =
+      (igraph_vector_int_t *)malloc(OD_MATRIX.size * sizeof(igraph_vector_int_t));
+  for (int j = 0; j < OD_MATRIX.size; j++)
+    igraph_vector_int_init(&saved_inbounds[j], 0);
+
+  // Custos SP salvos por par OD (para GAP aproximado)
+  double *saved_sp_costs = (double *)calloc(OD_MATRIX.n_elements, sizeof(double));
+
+  double demand_increment = 1.0;
+  for (int i = 0; i < 563; i++) {
+
+    if (warm_start) {
+      // Incrementar volumes ANTES para que volumes == fluxo total real
+      for (int j = 0; j < OD_MATRIX.size; j++) {
+        int n_alvos = igraph_vector_int_size(&OD_MATRIX.Elementos[j].alvos);
+        for (int k = 0; k < n_alvos; k++) {
+          VECTOR(OD_MATRIX.Elementos[j].volumes)[k] += demand_increment;
+          VECTOR(OD_MATRIX.Elementos[j].warm_volumes)[k] = demand_increment;
         }
-        for(i = 0; i < OD_MATRIX.size; i++){
-            fonte = OD_MATRIX.Elementos[i].fonte;
-            for(j = 0; j < bushes[i].n_alvos; j++){
-                node = VECTOR(OD_MATRIX.Elementos[i].alvos)[j];
-                time = VECTOR(bushes[i].paths.dist_shortest_local)[node];
-                if(time/initial_time[index] > T){
-                    congested++;
-                    int edge_id,target = node;
-                    while(target != OD_MATRIX.Elementos[i].fonte){
-                        edge_id = VECTOR(bushes[i].paths.min_edges)[target];
-                        VECTOR(BPR_PARAMETERS.cost_time)[edge_id] = 1e10;
-                        fprintf(file_removed_edges, "%d %d %d %d\n",iter, edge_id,fonte,node);
-                        target = IGRAPH_FROM(&Grafo, edge_id);
-                    }
-                }
-                VECTOR(OD_MATRIX.Elementos[i].volumes)[j] += alpha;
-                index++;
-            }
-        }
-
-        for(i = 0; i < BPR_PARAMETERS.L; i++){
-            double total_time = single_BPR(VECTOR(solucao)[i], VECTOR(BPR_PARAMETERS.cost_time)[i], VECTOR(BPR_PARAMETERS.capacidade)[i]);
-            eff += VECTOR(solucao)[i]*(VECTOR(BPR_PARAMETERS.cost_time)[i]/total_time);
-        }
-        eff /= BPR_PARAMETERS.L;
-        if(seed == 0) printf("%d %d %d %f\n",iter, congested, OD_MATRIX.n_elements, eff);
-
-        igraph_vector_push_back(&result, (double)congested/OD_MATRIX.n_elements);
-        for(i = 0; i < OD_MATRIX.size; i++) free_bush(&bushes[i]);
-        if(seed == 0) fclose(flow_per_alpha);
-        free(bushes);
-        iter++;
-        if((double)congested/OD_MATRIX.n_elements > 0.98){
-            soma += 1;
-            if(soma > 10) break;
-        }
-        if(congested == OD_MATRIX.n_elements) break;
+      }
+      // Carrega warm_volumes usando os inbounds salvos (sem Dijkstra)
+      load_warm_volumes_from_inbounds(&OD_MATRIX, &Grafo, &solucao, saved_inbounds);
     }
-    sprintf(filename, "./results/%d/percolation_%d.txt", K, seed);
-    FILE *file = fopen(filename, "w");
+    printf("Starting iteration %d with total demand: %f (increment: %.0f)\n",
+           i + 1, VECTOR(OD_MATRIX.Elementos[0].volumes)[0], demand_increment);
 
-    for (int i = 0; i < igraph_vector_size(&result); i++) {
-        printf("%f\n", VECTOR(result)[i]);
-        fprintf(file, "%.10e\n", VECTOR(result)[i]);
+    //iTAPAS(&BPR_PARAMETERS, &OD_MATRIX, &Grafo, &solucao, &WS);
+    //Dial(&Grafo, &OD_MATRIX, &BPR_PARAMETERS, &solucao, &bushes, warm_start, true);
+    leblanc(&BPR_PARAMETERS, &OD_MATRIX, &Grafo, &solucao, warm_start, saved_inbounds, saved_sp_costs);
+    double p = 0.;
+    for (int j = 0; j < BPR_PARAMETERS.L; j++) {
+      double time =
+          single_BPR(VECTOR(solucao)[j], VECTOR(BPR_PARAMETERS.cost_time)[j],
+                     VECTOR(BPR_PARAMETERS.capacidade)[j]);
+      if (time > 3 * VECTOR(BPR_PARAMETERS.cost_time)[j]) {
+        p++;
+      }
     }
-    fclose(file);
-    sprintf(filename, "./results/%d/last_od_%d.txt", K, seed);
-    FILE *lastr_od = fopen(filename, "w");
-    for (i = 0; i < OD_MATRIX.size; i++) {
-        for (j = 0; j < igraph_vector_int_size(&OD_MATRIX.Elementos[i].alvos); j++) {
-            fprintf(lastr_od, "%f\n", VECTOR(OD_MATRIX.Elementos[i].volumes)[j]);
-        }
-    }
-    fclose(lastr_od);
+    p /= BPR_PARAMETERS.L;
+    state.probabilty_congested_edges = p;
+    compute_strongly_connected_components(&state,&prev_state, &Grafo,NULL,0,0,1);
 
-    igraph_destroy(&Grafo);
-    free(initial_time);
-    igraph_vector_destroy(&BPR_PARAMETERS.cost_time);
-    igraph_vector_destroy(&BPR_PARAMETERS.capacidade);
-    igraph_vector_int_destroy(&edges);
+    warm_start = true;
+    demand_increment += 3.0;
+  }
+
+  // Cleanup
+  for (int i = 0; i < OD_MATRIX.size; i++)
+    igraph_vector_int_destroy(&saved_inbounds[i]);
+  free(saved_inbounds);
+  free(saved_sp_costs);
+  if (bushes != NULL) {
     for (int i = 0; i < OD_MATRIX.size; i++) {
-        igraph_vector_int_destroy(&OD_MATRIX.Elementos[i].alvos);
-        igraph_vector_destroy(&OD_MATRIX.Elementos[i].volumes);
+      free_bush(&bushes[i]);
     }
-    free(OD_MATRIX.Elementos);
-    igraph_vector_destroy(&solucao);
-    igraph_vector_destroy(&result);
+    free(bushes);
+  }
+  igraph_vector_destroy(&solucao);
 }
-

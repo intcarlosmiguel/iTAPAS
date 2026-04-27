@@ -303,9 +303,10 @@ def verificar_convergencia(estado, viagens):
                 return float('inf')
     
     custo_total_sistema = np.sum(fluxos_totais_arcos * custos_atuais)
-    if custo_total_sistema < 1e-9: return 0.0
-        
-    relative_gap = abs(1.0 - custo_total_sp / custo_total_sistema)
+    if custo_total_sistema < 1e-9: 
+        return 0.0
+
+    relative_gap = abs(1.0 - (custo_total_sp / custo_total_sistema))
     return relative_gap
 
 # --- Função Principal de Execução ---
@@ -353,8 +354,8 @@ def resolver_equilibrio_usuario(grafo, viagens, rho, max_iteracoes, tolerancia):
 
 # --- Ponto de Entrada Principal ---
 if __name__ == "__main__":
-    ARQUIVO_REDE = './example/edges.txt'
-    ARQUIVO_VIAGENS = './example/od.txt'
+    ARQUIVO_REDE = './fortaleza/edges.txt'
+    ARQUIVO_VIAGENS = './od_outputs/OD_10_300/OD_0.txt'
 
     # Carregar dados
     grafo_rede = carregar_rede_de_arquivo(ARQUIVO_REDE)
@@ -364,7 +365,7 @@ if __name__ == "__main__":
     fluxos_equilibrio = resolver_equilibrio_usuario(
         grafo=grafo_rede, 
         viagens=lista_viagens, 
-        rho=0.01, 
+        rho=0.1, 
         max_iteracoes=500, 
         tolerancia=1e-10
     )

@@ -4,4 +4,4 @@ gcc main.c -o main -fopenmp -O3 \
     -llapack -lblas -larpack -lgfortran -lxml2 -lglpk -lgmp -lgsl -lgslcblas -lm -lstdc++
 
 
-./main "./fortaleza/edges.txt" "iTAPAS" 10 300
+time ./main "./fortaleza/edges.txt" "CFW" 10 30000

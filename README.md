@@ -1,2 +1,0 @@
-# iTAPAS
- Algoritmo iTAPAS

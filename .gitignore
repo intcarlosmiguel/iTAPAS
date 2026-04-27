@@ -2,3 +2,10 @@
 /igraph/
 /fortaleza/
 /.venv/
+md/
+.agent/
+AlgorithmB/
+iTAPAS/
+input/
+od_outputs/
+results/
